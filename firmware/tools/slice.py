@@ -17,7 +17,7 @@ from PIL import Image, ImageDraw
 
 HERE = Path(__file__).resolve().parent          # firmware/tools/
 FIRMWARE = HERE.parent                          # firmware/
-SRC_DIR  = FIRMWARE / "data" / "raw"            # 元シートを置く場所
+SRC_DIR  = FIRMWARE / "assets" / "raw"          # 元シートを置く場所 (LittleFS には焼かない)
 OUT_DIR  = FIRMWARE / "data"                    # LittleFS root に直接書き出す
 
 TARGET = 240  # 出力サイズ (CoreS3 320x240 に中央寄せ)

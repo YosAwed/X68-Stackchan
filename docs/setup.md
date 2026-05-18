@@ -72,7 +72,7 @@ cp include/config.h.example include/config.h
 
 ### 2-2. ぺけ子ちゃん表情の生成と LittleFS への書込
 
-1. 36 表情のスプライトシート 4 枚を `firmware/data/raw/` に置く
+1. 36 表情のスプライトシート 4 枚を `firmware/assets/raw/` に置く
 2. 240x240 JPG への分割スクリプトを実行 (要 Pillow)
 
 ```bash

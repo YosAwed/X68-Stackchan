@@ -52,14 +52,16 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size) {
     const uint8_t* pcm = wav + 44;
     size_t pcm_bytes = size - 44;
     // 安全策: "data" タグを探して位置を上書き
-    for (size_t i = 12; i + 8 < size && i < 256; ++i) {
+    for (size_t i = 12; i + 8 <= size && i < 256; ++i) {
         if (memcmp(wav + i, "data", 4) == 0) {
             uint32_t n; memcpy(&n, wav + i + 4, 4);
             pcm = wav + i + 8;
-            pcm_bytes = n;
+            const size_t available = size - (i + 8);
+            pcm_bytes = (n < available) ? n : available;
             break;
         }
     }
+    pcm_bytes &= ~static_cast<size_t>(1);        // 16-bit PCM の端数は読まない
     const size_t samples = pcm_bytes / 2;       // 16-bit PCM mono 想定
     const uint32_t sr    = MIC_SAMPLE_RATE;     // TTS 側で 16k に統一済み
 

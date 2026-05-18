@@ -41,9 +41,9 @@ M5Stack 公式スタックちゃん (CoreS3 SE) を、X68000 擬人化キャラ 
 │   │   ├── face_map.h         # シーン→表情番号 (ここを書き換えて配役変更)
 │   │   └── chime.h            # 起動チャイム / ack beep / error beep
 │   ├── tools/slice.py         # 4 枚のスプライトシートを 36 個に分割
+│   ├── assets/raw/            # 元シート画像置き場 (LittleFS には焼かない)
 │   └── data/                  # LittleFS イメージ (pio run -t uploadfs で焼く)
-│       ├── face_01.jpg .. face_36.jpg
-│       └── raw/               # 元シート画像 (LittleFS には不要なら別フォルダへ)
+│       └── face_01.jpg .. face_36.jpg
 └── server/                    # Mac mini 側 (Python / FastAPI)
     ├── requirements.txt
     ├── main.py                # /chat エンドポイント

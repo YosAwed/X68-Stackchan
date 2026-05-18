@@ -4,6 +4,7 @@
 #pragma once
 
 #include <WiFi.h>
+#include <cstdlib>
 #include <cstring>
 #include "config.h"
 
@@ -29,7 +30,7 @@ public:
             log_e("connect failed: %s:%u", SERVER_HOST, (unsigned)SERVER_PORT);
             return r;
         }
-        client.setTimeout(HTTP_TIMEOUT_MS / 1000);
+        client.setTimeout(HTTP_TIMEOUT_MS);
 
         // ---- multipart ボディ組み立て ----
         const char* boundary = "----stackchanboundary";
@@ -79,12 +80,20 @@ public:
             String line = client.readStringUntil('\n');
             if (line == "\r" || line.length() == 0) break;
             line.trim();
-            if (line.startsWith("Content-Length:")) {
-                resp_len = (size_t)line.substring(15).toInt();
-            } else if (line.startsWith("X-Stackchan-User-Text:")) {
-                r.user_text = line.substring(22); r.user_text.trim();
-            } else if (line.startsWith("X-Stackchan-Bot-Text:")) {
-                r.bot_text  = line.substring(21); r.bot_text.trim();
+            const int colon = line.indexOf(':');
+            if (colon <= 0) continue;
+
+            String name = line.substring(0, colon);
+            String value = line.substring(colon + 1);
+            name.toLowerCase();
+            value.trim();
+
+            if (name == "content-length") {
+                resp_len = (size_t)value.toInt();
+            } else if (name == "x-stackchan-user-text") {
+                r.user_text = urlDecode(value);
+            } else if (name == "x-stackchan-bot-text") {
+                r.bot_text  = urlDecode(value);
             }
         }
 
@@ -110,8 +119,40 @@ public:
         }
         r.body_size = got;
         r.ok = (got == resp_len);
+        if (!r.ok) {
+            free(r.body);
+            r.body = nullptr;
+            r.body_size = 0;
+        }
         client.stop();
         return r;
+    }
+
+private:
+    static int hexValue(char c) {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    }
+
+    static String urlDecode(const String& encoded) {
+        String out;
+        out.reserve(encoded.length());
+        for (size_t i = 0; i < encoded.length(); ++i) {
+            const char c = encoded[i];
+            if (c == '%' && i + 2 < encoded.length()) {
+                const int hi = hexValue(encoded[i + 1]);
+                const int lo = hexValue(encoded[i + 2]);
+                if (hi >= 0 && lo >= 0) {
+                    out += static_cast<char>((hi << 4) | lo);
+                    i += 2;
+                    continue;
+                }
+            }
+            out += (c == '+') ? ' ' : c;
+        }
+        return out;
     }
 };
 

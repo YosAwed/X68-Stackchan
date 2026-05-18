@@ -9,3 +9,13 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Python
+__pycache__/
+*.pyc
+
+# Artwork sources and generated leftovers that must not enter LittleFS data/
+firmware/assets/raw/*
+!firmware/assets/raw/.gitkeep
+firmware/data/raw/
+firmware/data/faces/
