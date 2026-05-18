@@ -1,0 +1,9 @@
+# ESP32-S3 16MB Flash 用パーティション (OTA 無し)
+# app に 6MB、 LittleFS に約 9.94MB を確保。
+# 36 枚の JPG (≒650 KB) には十分過ぎるが、将来コマを増やしたい時の余地。
+#
+# Name,    Type, SubType,  Offset,   Size,    Flags
+nvs,       data, nvs,      0x9000,   0x5000,
+otadata,   data, ota,      0xe000,   0x2000,
+app0,      app,  ota_0,    0x10000,  0x600000,
+spiffs,    data, spiffs,   0x610000, 0x9F0000,

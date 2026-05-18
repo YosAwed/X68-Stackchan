@@ -1,0 +1,39 @@
+// ========================================================
+//  Wi-Fi / サーバ / ハード設定
+//  これを config.h にコピーして自分の環境に書き換える
+//   cp config.h.example config.h
+//  config.h は .gitignore で除外しておくこと
+// ========================================================
+#pragma once
+
+// ---- Wi-Fi --------------------------------------------------
+static constexpr const char* WIFI_SSID = "your-ssid";
+static constexpr const char* WIFI_PASS = "your-password";
+
+// ---- 母艦 (Mac mini) ---------------------------------------
+// FastAPI サーバの IP とポート
+static constexpr const char* SERVER_HOST = "192.168.1.42";
+static constexpr uint16_t    SERVER_PORT = 8000;
+static constexpr const char* SERVER_PATH = "/chat";
+
+// セッション ID。会話履歴をサーバ側で保持したい場合に使う
+static constexpr const char* SESSION_ID  = "stackchan-01";
+
+// ---- 録音パラメータ -----------------------------------------
+// Whisper が 16kHz mono を素直に食えるのでそろえる
+static constexpr uint32_t MIC_SAMPLE_RATE = 16000;
+static constexpr uint8_t  MIC_BITS        = 16;
+static constexpr uint8_t  MIC_CHANNELS    = 1;
+// 1 発話あたりの最大録音秒数 (PSRAM にバッファ確保)
+static constexpr uint32_t MAX_REC_SECONDS = 10;
+
+// ---- スピーカ -----------------------------------------------
+static constexpr uint8_t  SPK_VOLUME = 180; // 0..255
+
+// ---- サーボ (首振り)。実機到着後に確定 ---------------------
+// Port.B (GROVE) を想定。SG90 を 2 個。
+static constexpr int SERVO_YAW_PIN   = 1; // 仮
+static constexpr int SERVO_PITCH_PIN = 2; // 仮
+
+// ---- HTTP タイムアウト --------------------------------------
+static constexpr uint32_t HTTP_TIMEOUT_MS = 30000;
