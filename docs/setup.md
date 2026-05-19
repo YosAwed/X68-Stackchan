@@ -53,8 +53,8 @@ source .venv/bin/activate
 # (1) CUDA 対応 torch を先に。cu121 の例。GPU 世代に合わせて cu124 等に変える
 pip install --index-url https://download.pytorch.org/whl/cu121 torch torchaudio
 
-# (2) 改造済み Irodori-TTS-Lite を入れる (<YOU> は自分の GitHub アカウントに置換)
-pip install git+https://github.com/<YOU>/Irodori-TTS-Lite.git@main
+# (2) 改造済み Irodori-TTS-Lite (irodori_tts 親パッケージ + infer モジュール同梱 fork)
+pip install git+https://github.com/YosAwed/Irodori-TTS-Lite.git@main
 
 # (3) 残り (FastAPI / faster-whisper / pyopenjtalk など)
 pip install -r requirements-cuda.txt
