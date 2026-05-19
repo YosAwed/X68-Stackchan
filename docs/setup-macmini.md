@@ -4,6 +4,7 @@
 > Mac mini など NVIDIA GPU が無い母艦で動かしたい場合のみこのファイルに従う。
 >
 > 違いは TTS だけで、firmware 側は無改造で同じものが動く (`docs/setup.md` のセクション 2 以降をそのまま使う)。
+> 母艦 PC 側だけの要点は [pc-setup.md](pc-setup.md) にもまとめている。
 
 ## 0. 用意するもの
 

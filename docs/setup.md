@@ -1,6 +1,8 @@
 # セットアップ手順
 
 > **NVIDIA GPU が無い母艦で動かしたい場合は [setup-macmini.md](setup-macmini.md) (VOICEVOX 経路) を参照**。こちらは Windows + WSL2 + CUDA 経路 (Irodori-TTS-Lite) の手順。
+>
+> 母艦 PC 側だけを先に準備する場合は [pc-setup.md](pc-setup.md) に要点をまとめている。
 
 ## 0. 用意するもの
 

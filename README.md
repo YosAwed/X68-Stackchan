@@ -6,6 +6,8 @@ M5Stack 公式スタックちゃん (CoreS3 SE) を、X68000 擬人化キャラ 
 > TTS に [Irodori-TTS-Lite](https://github.com/kizuna-intelligence/Irodori-TTS-Lite) を採用している関係で、母艦は CUDA 必須 (Ampere 以降推奨)。当初想定の Mac mini からは構成変更している。
 >
 > Mac mini など NVIDIA GPU が無い母艦で動かしたい場合は、VOICEVOX 経路の代替セットアップ [docs/setup-macmini.md](docs/setup-macmini.md) を用意してある。`.env` で `TTS_BACKEND=voicevox` に切り替えるだけ。
+>
+> 母艦 PC 側だけを先に準備する場合は [docs/pc-setup.md](docs/pc-setup.md) を参照。
 
 起動時に Human68k 風のスプラッシュが流れて、ぺけ子ちゃんの Avatar が立ち上がる、というのが完成形のイメージ。
 ぺけ子ちゃんのアートワーク自体は同人由来なのでリポには同梱せず、`firmware/include/pekeko_theme.h` のカラーパレットと、好みの顔絵差し替えポイントだけを公開している。
@@ -30,6 +32,7 @@ M5Stack 公式スタックちゃん (CoreS3 SE) を、X68000 擬人化キャラ 
 ├── README.md                  # このファイル
 ├── docs/
 │   ├── architecture.md        # 詳細アーキテクチャ
+│   ├── pc-setup.md            # 母艦 PC 側だけのセットアップ
 │   ├── setup.md               # セットアップ手順 (CUDA / WSL2 / Irodori)
 │   └── setup-macmini.md       # 代替セットアップ (Mac mini / VOICEVOX)
 ├── firmware/                  # CoreS3 側 (PlatformIO + Arduino)
