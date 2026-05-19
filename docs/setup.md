@@ -113,7 +113,14 @@ ipconfig | findstr IPv4    # 例: 192.168.1.42
 
 ### 2-1. PlatformIO 環境
 
-VSCode + PlatformIO 拡張を入れた状態で:
+PlatformIO CLI を pip でインストールする (`apt` 版は古くて ESP32-S3 非対応のことが多い):
+
+```bash
+pip install platformio
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+pio --version   # 6.x 以上であること
+```
 
 ```bash
 cd firmware
