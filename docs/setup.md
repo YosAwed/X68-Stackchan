@@ -5,74 +5,80 @@
 - M5Stack CoreS3 SE 本体 + USB-C ケーブル
 - スタックちゃん Takao Base (組立済 or キット)
 - サーボ SG90 ×2
-- Windows 11 + WSL2 (Ubuntu 22.04 以降) + NVIDIA GPU (Ampere 以降, VRAM 8GB 以上推奨)
+- Windows 11 + WSL2 (Ubuntu 22.04 以降) + NVIDIA GPU (Ampere 以降, VRAM 12GB 以上推奨。8GB は whisper-small + Irodori + Ollama qwen2.5:7b で結構ギリ)
 - 同一 Wi-Fi LAN (CoreS3 から母艦に IP で届くこと)
 
 ## 1. 母艦 (Windows + WSL2) 側のセットアップ
+
+> [Irodori-TTS-Lite](https://github.com/kizuna-intelligence/Irodori-TTS-Lite) は CUDA + Triton 前提なので WSL2 (Linux) 内で動かす。Windows ネイティブだと Triton が走らない。
 
 ### 1-0. WSL2 + CUDA の前提
 
 Windows ホスト側に最新の NVIDIA ドライバを入れ、WSL2 (Ubuntu) を起動して以下が通ることを確認する。
 
 ```bash
-nvidia-smi              # ホストの GPU が見える
+nvidia-smi              # ホストの GPU が見える (WSL2 が透過利用)
 ```
 
 WSL2 内で必要なシステムパッケージ:
 
 ```bash
 sudo apt update
-sudo apt install -y python3.11 python3.11-venv build-essential ffmpeg
+sudo apt install -y python3.11 python3.11-venv build-essential ffmpeg git
 ```
 
-### 1-1. Irodori-TTS-Lite の準備
+### 1-1. Ollama を起動 (WSL2 内)
 
-[Irodori-TTS-Lite](https://github.com/kizuna-intelligence/Irodori-TTS-Lite) は CUDA + Triton 前提のため WSL2 (Linux) で動かす。改造済みの fork を `pip install` する形にしてある (`server/tts.py` は in-process で import する)。
-
-```bash
-# まず CUDA 対応 torch を先に入れる (cu121 の例。GPU 世代に合わせて調整)
-pip install --index-url https://download.pytorch.org/whl/cu121 torch torchaudio
-
-# 改造済み Irodori-TTS-Lite を入れる (自分の fork URL に置換)
-pip install git+https://github.com/<YOU>/Irodori-TTS-Lite.git@main
-
-# 親パッケージ (推論ランタイム本体): fork の依存に入っていなければ手動で。
-# パッケージ名は upstream の README / pyproject.toml を確認すること。
-# pip install irodori-tts        # 例: PyPI にある場合
-# pip install pyopenjtalk         # phoneme 長から秒数推定に使う
-```
-
-初回 import 時に Hugging Face (`kizuna-intelligence/Irodori-TTS-Lite-int4`) から weights が落ちてくる。事前に試したい場合は upstream の `example/run_tts.py --no-ref --text "テスト" --output-wav /tmp/t.wav` で動作確認しておくと吉。
-
-> **性能上の注意**: 現在の [server/tts.py](../server/tts.py) は upstream の CLI shape (`infer.main()` を sys.argv 経由で叩く) をそのまま in-process で再現しているので、`/chat` のたびに `InferenceRuntime` が再構築されるとモデルロードが入って秒オーダーで遅くなる可能性がある。fork 側で `InferenceRuntime` をシングルトン化して `synthesize(text) -> waveform` を露出させた上で、`server/tts.py` の該当部分を直接呼び出しに差し替えるのが本筋。
-
-### 1-2. Ollama を起動 (WSL2 内)
+Python 側に依存しないので先に済ませてしまう。
 
 ```bash
 curl -fsSL https://ollama.com/install.sh | sh
-ollama serve            # 11434 で待ち受け (バックグラウンドで起動)
+ollama serve            # 11434 で待ち受け (別 tty かバックグラウンドで)
 ollama pull qwen2.5:7b  # 日本語の出が素直なものを推奨
 ```
 
-### 1-3. このリポジトリの server/ を立ち上げる
+### 1-2. server/ の venv 作成と依存インストール
+
+**順序が重要**: 先に venv を作って activate し、その中で torch (CUDA) → 改造済み Irodori fork → `requirements.txt` の順に入れる (venv の外で入れても見えない)。
 
 ```bash
 cd server
 python3.11 -m venv .venv
 source .venv/bin/activate
 
-# torch / Irodori-TTS-Lite は 1-1 で先に入れてあるのでここは追加分だけ
-pip install -r requirements.txt
+# (1) CUDA 対応 torch を先に。cu121 の例。GPU 世代に合わせて cu124 等に変える
+pip install --index-url https://download.pytorch.org/whl/cu121 torch torchaudio
 
+# (2) 改造済み Irodori-TTS-Lite を入れる (<YOU> は自分の GitHub アカウントに置換)
+pip install git+https://github.com/<YOU>/Irodori-TTS-Lite.git@main
+
+# (3) 残り (FastAPI / faster-whisper / pyopenjtalk など)
+pip install -r requirements.txt
+```
+
+> **親パッケージ `irodori_tts` について**: Irodori-TTS-Lite は量子化パッチ層で、実推論は `irodori_tts.inference_runtime` (parent package) を呼ぶ。fork が transitive 依存として pull するならそのままで OK。`ModuleNotFoundError: infer` が出たら fork の `pyproject.toml` を確認し、親パッケージ名を確かめて手動 `pip install` する。
+
+事前に Irodori 単体で動作確認したい場合 (推奨):
+
+```bash
+python -m example.run_tts --no-ref --text "テスト" --output-wav /tmp/t.wav
+# 初回は HuggingFace (kizuna-intelligence/Irodori-TTS-Lite-int4) から weights を auto-download
+```
+
+### 1-3. `.env` の編集と uvicorn 起動
+
+```bash
 cp .env.example .env
-# .env を編集 (OLLAMA_MODEL / WHISPER_MODEL / IRODORI_REF_WAV など)
+# .env を編集:
+#   OLLAMA_MODEL     — pull したモデル名と一致させる
+#   WHISPER_MODEL    — VRAM に余裕があれば medium / large-v3
+#   IRODORI_REF_WAV  — 参照音声 WAV のパス (空なら --no-ref / voice-design)
+#   IRODORI_CHECKPOINT — 通常は空で OK (HF から auto-download)
 
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-初回起動で Irodori-TTS-Lite の weights ロードに数秒〜十秒程度かかる。`Irodori-TTS-Lite ready` のログが出れば準備完了。
-
-別端末から疎通確認:
+初回起動で `Irodori-TTS-Lite ready` のログが出るまで数秒〜十数秒。別端末から疎通確認:
 
 ```bash
 # 適当な短い WAV (16k mono) を投げる
@@ -80,6 +86,8 @@ curl -X POST -F "audio=@hello.wav" http://localhost:8000/chat --output reply.wav
 ```
 
 `reply.wav` がぺけ子ちゃんの声になっていれば成功。
+
+> **性能上の注意**: 現在の [server/tts.py](../server/tts.py) は upstream の CLI shape (`sys.argv` を組んで `infer.main()` を叩き、tempfile WAV を読み戻す) をそのまま in-process で再現している。`infer.main()` が呼び出しごとに `InferenceRuntime` を作り直す実装なら、`/chat` の TTS フェーズが毎回秒オーダー。fork 側で `InferenceRuntime` をシングルトン化して `synthesize(text) -> waveform` をエクスポートし、`server/tts.py` の tempfile + sys.argv ブロック (約 20 行) を直接呼び出しに差し替えるのが本筋。
 
 ### 1-4. 母艦の IP を控える
 
