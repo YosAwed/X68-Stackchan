@@ -50,9 +50,12 @@ Ollama:
 
 ```bash
 curl -fsSL https://ollama.com/install.sh | sh
-ollama serve
+ollama serve &          # WSL2 は systemd 無効が多いので & でバックグラウンド起動
 ollama pull qwen2.5:7b
 ```
+
+> WSL2 で `systemd` が無効の場合、インストール時に警告が出るが動作に支障はない。
+> systemd を有効にするには `/etc/wsl.conf` に `[boot]\nsystemd=true` を追記して `wsl --shutdown` で再起動する。
 
 別ターミナルでサーバ環境を作る。
 
@@ -62,7 +65,7 @@ python3.11 -m venv .venv
 source .venv/bin/activate
 
 pip install --index-url https://download.pytorch.org/whl/cu121 torch torchaudio
-pip install git+https://github.com/<YOU>/Irodori-TTS-Lite.git@main
+pip install git+https://github.com/YosAwed/Irodori-TTS-Lite.git@main
 pip install -r requirements-cuda.txt
 
 cp .env.example .env
