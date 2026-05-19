@@ -1,16 +1,32 @@
-# Mac mini で動かす音声会話パイプライン用
-# python 3.11 以降推奨。 Apple Silicon なら faster-whisper の Metal で動く
+# Windows + WSL2 (Ubuntu) + NVIDIA GPU (Ampere 以降推奨) で動かす想定
+# python 3.11 以降推奨
+#
+# CUDA 対応 torch は別 index から先に入れること (setup.md 参照):
+#   pip install --index-url https://download.pytorch.org/whl/cu121 torch torchaudio
 
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 python-multipart==0.0.9
 pydantic-settings==2.5.2
 
-# STT
+# STT — faster-whisper は ctranslate2 が CUDA libs を引っ張る
 faster-whisper==1.0.3
 
 # LLM (Ollama HTTP 経由)
 httpx==0.27.2
+
+# TTS — Irodori-TTS-Lite (改造済み fork)。
+# 下行のコメントを外し、自分の fork URL に差し替えて使う:
+# irodori-tts-lite @ git+https://github.com/<YOU>/Irodori-TTS-Lite.git@main
+#
+# Irodori-TTS-Lite は親パッケージ irodori_tts (推論ランタイム本体) と
+# pyopenjtalk (音素長から秒数を推定するために server/tts.py が使う) を
+# 別途要求する。fork の pyproject.toml で依存指定していなければ手動で:
+#   pip install pyopenjtalk
+# torchaudio はリサンプル用にここで明示
+torchaudio>=2.1
+numpy>=1.26
+pyopenjtalk>=0.3
 
 # 開発支援
 python-dotenv==1.0.1

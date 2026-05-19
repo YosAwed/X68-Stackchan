@@ -46,8 +46,10 @@ llm = LLM(
     history_turns=int(os.getenv("HISTORY_TURNS", "6")),
 )
 tts = TTS(
-    host=os.getenv("VOICEVOX_HOST", "http://127.0.0.1:50021"),
-    speaker=int(os.getenv("VOICEVOX_SPEAKER", "3")),
+    ref_wav=os.getenv("IRODORI_REF_WAV") or None,
+    device=os.getenv("IRODORI_DEVICE", "cuda"),
+    force_fp16=os.getenv("IRODORI_FORCE_FP16", "1") == "1",
+    checkpoint=os.getenv("IRODORI_CHECKPOINT") or None,
 )
 
 app = FastAPI(title="Stack-chan server", version="0.1.0")

@@ -5,42 +5,72 @@
 - M5Stack CoreS3 SE 本体 + USB-C ケーブル
 - スタックちゃん Takao Base (組立済 or キット)
 - サーボ SG90 ×2
-- Mac mini (Apple Silicon 推奨)
-- 同一 Wi-Fi LAN (CoreS3 から Mac mini に IP で届くこと)
+- Windows 11 + WSL2 (Ubuntu 22.04 以降) + NVIDIA GPU (Ampere 以降, VRAM 8GB 以上推奨)
+- 同一 Wi-Fi LAN (CoreS3 から母艦に IP で届くこと)
 
-## 1. Mac mini 側のセットアップ
+## 1. 母艦 (Windows + WSL2) 側のセットアップ
 
-### 1-1. VOICEVOX engine を起動
+### 1-0. WSL2 + CUDA の前提
 
-GUI 版 VOICEVOX をインストールするか、`voicevox_engine` Docker イメージを起動:
+Windows ホスト側に最新の NVIDIA ドライバを入れ、WSL2 (Ubuntu) を起動して以下が通ることを確認する。
 
 ```bash
-docker run --rm -p '50021:50021' voicevox/voicevox_engine:cpu-latest
+nvidia-smi              # ホストの GPU が見える
 ```
 
-`curl http://localhost:50021/version` が JSON を返せば OK。
-
-### 1-2. Ollama を起動
+WSL2 内で必要なシステムパッケージ:
 
 ```bash
-brew install ollama
-ollama serve            # 11434 で待ち受け
-ollama pull qwen2.5:7b  # 日本語の素直さで qwen2.5 か gemma2 系がおすすめ
+sudo apt update
+sudo apt install -y python3.11 python3.11-venv build-essential ffmpeg
+```
+
+### 1-1. Irodori-TTS-Lite の準備
+
+[Irodori-TTS-Lite](https://github.com/kizuna-intelligence/Irodori-TTS-Lite) は CUDA + Triton 前提のため WSL2 (Linux) で動かす。改造済みの fork を `pip install` する形にしてある (`server/tts.py` は in-process で import する)。
+
+```bash
+# まず CUDA 対応 torch を先に入れる (cu121 の例。GPU 世代に合わせて調整)
+pip install --index-url https://download.pytorch.org/whl/cu121 torch torchaudio
+
+# 改造済み Irodori-TTS-Lite を入れる (自分の fork URL に置換)
+pip install git+https://github.com/<YOU>/Irodori-TTS-Lite.git@main
+
+# 親パッケージ (推論ランタイム本体): fork の依存に入っていなければ手動で。
+# パッケージ名は upstream の README / pyproject.toml を確認すること。
+# pip install irodori-tts        # 例: PyPI にある場合
+# pip install pyopenjtalk         # phoneme 長から秒数推定に使う
+```
+
+初回 import 時に Hugging Face (`kizuna-intelligence/Irodori-TTS-Lite-int4`) から weights が落ちてくる。事前に試したい場合は upstream の `example/run_tts.py --no-ref --text "テスト" --output-wav /tmp/t.wav` で動作確認しておくと吉。
+
+> **性能上の注意**: 現在の [server/tts.py](../server/tts.py) は upstream の CLI shape (`infer.main()` を sys.argv 経由で叩く) をそのまま in-process で再現しているので、`/chat` のたびに `InferenceRuntime` が再構築されるとモデルロードが入って秒オーダーで遅くなる可能性がある。fork 側で `InferenceRuntime` をシングルトン化して `synthesize(text) -> waveform` を露出させた上で、`server/tts.py` の該当部分を直接呼び出しに差し替えるのが本筋。
+
+### 1-2. Ollama を起動 (WSL2 内)
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+ollama serve            # 11434 で待ち受け (バックグラウンドで起動)
+ollama pull qwen2.5:7b  # 日本語の出が素直なものを推奨
 ```
 
 ### 1-3. このリポジトリの server/ を立ち上げる
 
 ```bash
 cd server
-python3 -m venv .venv
+python3.11 -m venv .venv
 source .venv/bin/activate
+
+# torch / Irodori-TTS-Lite は 1-1 で先に入れてあるのでここは追加分だけ
 pip install -r requirements.txt
 
 cp .env.example .env
-# .env を編集 (OLLAMA_MODEL / VOICEVOX_SPEAKER / WHISPER_MODEL)
+# .env を編集 (OLLAMA_MODEL / WHISPER_MODEL / IRODORI_REF_WAV など)
 
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
+
+初回起動で Irodori-TTS-Lite の weights ロードに数秒〜十秒程度かかる。`Irodori-TTS-Lite ready` のログが出れば準備完了。
 
 別端末から疎通確認:
 
@@ -49,12 +79,15 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 curl -X POST -F "audio=@hello.wav" http://localhost:8000/chat --output reply.wav
 ```
 
-`reply.wav` がスタックちゃんの声になっていれば成功。
+`reply.wav` がぺけ子ちゃんの声になっていれば成功。
 
-### 1-4. Mac mini の IP を控える
+### 1-4. 母艦の IP を控える
 
-```bash
-ipconfig getifaddr en0   # 例: 192.168.1.42
+CoreS3 からは Windows ホストの LAN IP に届けばよい (WSL2 への port forward は WSL2 が透過的に面倒を見る)。
+
+```powershell
+# Windows 側 PowerShell
+ipconfig | findstr IPv4    # 例: 192.168.1.42
 ```
 
 ## 2. CoreS3 側のセットアップ
@@ -116,8 +149,10 @@ pio device monitor -e m5stack-cores3
 | 症状 | 切り分け |
 |------|----------|
 | `WiFi connected` が出ない | `config.h` の SSID/PASS、2.4GHz 帯か |
-| 録音できているが応答が無音 | Mac mini 側の uvicorn ログを確認。Whisper でテキスト化されているか |
-| 応答テキストは出るのに音が出ない | VOICEVOX engine の port 50021 が開いているか |
+| 録音できているが応答が無音 | 母艦側の uvicorn ログを確認。Whisper でテキスト化されているか |
+| 応答テキストは出るのに音が出ない | `Irodori-TTS-Lite ready` ログが出ているか / `nvidia-smi` で VRAM が足りているか |
+| `CUDA out of memory` | `WHISPER_MODEL` を下げる、`IRODORI_FORCE_FP16=1` を維持、他の GPU プロセスを落とす |
+| `Triton` 関連エラー | WSL2 / Linux で実行しているか確認。Windows ネイティブだと Triton が動かない |
 | 早口/雑音で誤認識 | `WHISPER_MODEL` を `large-v3` に上げる、もしくは録音ゲインを下げる |
 | `LittleFS init failed` と画面に出る | `pio run -t uploadfs` が済んでいない、もしくはパーティションが古い |
 | 口パクのテンポが合わない | `main.cpp` の `RMS_THRESH` (既定 2200) を上下する |
