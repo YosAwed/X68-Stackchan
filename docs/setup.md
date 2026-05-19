@@ -60,12 +60,19 @@ pip install git+https://github.com/YosAwed/Irodori-TTS-Lite.git@main
 pip install -r requirements-cuda.txt
 ```
 
-> **親パッケージ `irodori_tts` について**: Irodori-TTS-Lite は量子化パッチ層で、実推論は `irodori_tts.inference_runtime` (parent package) を呼ぶ。fork が transitive 依存として pull するならそのままで OK。`ModuleNotFoundError: infer` が出たら fork の `pyproject.toml` を確認し、親パッケージ名を確かめて手動 `pip install` する。
-
 事前に Irodori 単体で動作確認したい場合 (推奨):
 
 ```bash
-python -m example.run_tts --no-ref --text "テスト" --output-wav /tmp/t.wav
+python -c "
+import pyopenjtalk, irodori_tts_lite, sys, infer
+irodori_tts_lite.configure(use_fused=True, force_fp16=True)
+irodori_tts_lite.patch()
+ckpt = irodori_tts_lite.resolve_checkpoint(None)
+phs = pyopenjtalk.g2p('テスト', kana=False).split()
+infer.FIXED_SECONDS = max(2.0, len(phs) / 11.0 + 0.6)
+sys.argv = ['infer', '--checkpoint', ckpt, '--text', 'テスト', '--output-wav', '/tmp/t.wav', '--no-ref']
+infer.main()
+"
 # 初回は HuggingFace (kizuna-intelligence/Irodori-TTS-Lite-int4) から weights を auto-download
 ```
 
