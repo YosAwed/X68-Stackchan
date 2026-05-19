@@ -21,17 +21,20 @@
 #include "face_map.h"
 #include "chime.h"
 #include "servo_motion.h"
+#include "power.h"
 
 using namespace stackchan;
 
 static PekekoFace     g_face;
 static AudioRecorder  g_rec;
 static ServoMotion    g_servo;
+static PowerManager   g_pwr;
 static State          g_state = State::Boot;
 
 static void setState(State s, int face_id = -1) {
     g_state = s;
     if (face_id > 0) g_face.show(face_id);
+    g_pwr.noteActivity();   // idle スリープのタイマ起点を更新
     switch (s) {
         case State::Idle:      g_servo.setIdle();      break;
         case State::Listening: g_servo.setListening(); break;
@@ -138,6 +141,8 @@ void setup() {
         // サーボ未接続でも続行 (会話パイプラインは独立で動く)
         Serial.println("Servo init failed; continuing without servo");
     }
+    g_pwr.begin();
+
     if (!connectWiFi()) {
         g_face.show(faces::FACE_ERR_WIFI);
         return;
@@ -187,6 +192,16 @@ void loop() {
 
         default:
             break;
+    }
+
+    // 電源管理: 低電池警告 / クリティカルシャットダウン / idle deep sleep
+    g_pwr.poll();
+    g_servo.setEnabled(!g_pwr.batteryLow());
+    if (g_pwr.shouldSleep(g_state)) {
+        g_face.show(faces::FACE_IDLE_LONG);   // Zzz
+        delay(500);
+        g_pwr.enterDeepSleep();
+        // ここには戻ってこない (復帰時はリセット → setup() 再走)
     }
 
     delay(5);

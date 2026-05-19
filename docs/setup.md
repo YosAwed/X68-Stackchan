@@ -6,9 +6,11 @@
 
 - M5Stack CoreS3 SE 本体 + USB-C ケーブル
 - スタックちゃん Takao Base (組立済 or キット)
-- サーボ SG90 ×2
+- サーボ SG90 ×2 + **外部 5V 電源** (18650 ホルダや別モバイルバッテリ。SG90 ×2 を CoreS3 内蔵 LiPo から直接駆動すると突入電流で本体がリセットしうるので分離推奨)
 - Windows 11 + WSL2 (Ubuntu 22.04 以降) + NVIDIA GPU (Ampere 以降, VRAM 12GB 以上推奨。8GB は whisper-small + Irodori + Ollama qwen2.5:7b で結構ギリ)
 - 同一 Wi-Fi LAN (CoreS3 から母艦に IP で届くこと)
+
+> バッテリ駆動の挙動 (低電池サーボ抑止 / 5 分 idle で deep sleep / 電源ボタンで復帰) は [docs/architecture.md#電源--バッテリ駆動](architecture.md#電源--バッテリ駆動) 参照。
 
 ## 1. 母艦 (Windows + WSL2) 側のセットアップ
 

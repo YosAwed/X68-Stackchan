@@ -9,7 +9,7 @@
 
 - M5Stack CoreS3 SE 本体 + USB-C ケーブル
 - スタックちゃん Takao Base (組立済 or キット)
-- サーボ SG90 ×2
+- サーボ SG90 ×2 + **外部 5V 電源** (18650 ホルダや別モバイルバッテリ。詳細は [architecture.md](architecture.md#電源--バッテリ駆動))
 - Mac mini (Apple Silicon 推奨)
 - 同一 Wi-Fi LAN (CoreS3 から Mac mini に IP で届くこと)
 

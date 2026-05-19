@@ -31,6 +31,10 @@ public:
 
     bool ok() const { return ok_; }
 
+    // 低電池時に呼ぶ。enabled=false の間は write() / RMS 更新を抑止する
+    // (SG90 の突入電流による本体リセット回避)
+    void setEnabled(bool enabled) { enabled_ = enabled; }
+
     void setIdle()      { write(YAW_CENTER,      PITCH_NEUTRAL);     }
     void setListening() { write(YAW_CENTER,      PITCH_FORWARD);     }
     void setThinking()  { write(YAW_CENTER - 12, PITCH_NEUTRAL + 6); }
@@ -49,6 +53,7 @@ public:
     // 発話中: 口パクの RMS と同じ 25 fps tick から呼ぶ。
     // 口が開いた瞬間に pitch を少し上げて「うなずきながら喋る」風に。
     void updateSpeakingByRms(int rms, int rms_thresh) {
+        if (!enabled_) return;
         const int target = (rms > rms_thresh)
             ? PITCH_NEUTRAL - 8   // 顔上げ
             : PITCH_NEUTRAL - 2;  // ほぼ中立
@@ -64,7 +69,7 @@ private:
     static constexpr int PITCH_FORWARD = 100;  // ちょっとお辞儀
 
     void write(int yaw_deg, int pitch_deg) {
-        if (!ok_) return;
+        if (!ok_ || !enabled_) return;
         yaw_.write(yaw_deg);
         pitch_.write(pitch_deg);
         last_yaw_   = yaw_deg;
@@ -72,7 +77,8 @@ private:
     }
 
     Servo yaw_, pitch_;
-    bool ok_ = false;
+    bool ok_      = false;
+    bool enabled_ = true;
     int  last_yaw_   = -1;
     int  last_pitch_ = -1;
 };
