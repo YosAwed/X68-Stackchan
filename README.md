@@ -44,7 +44,8 @@ M5Stack 公式スタックちゃん (CoreS3 SE) を、X68000 擬人化キャラ 
 │   │   ├── pekeko_theme.h     # X68000 風スプラッシュ
 │   │   ├── pekeko_face.h      # LittleFS から face_NN.jpg を描く
 │   │   ├── face_map.h         # シーン→表情番号 (ここを書き換えて配役変更)
-│   │   └── chime.h            # 起動チャイム / ack beep / error beep
+│   │   ├── chime.h            # 起動チャイム / ack beep / error beep
+│   │   └── servo_motion.h     # 首振りサーボ (SG90 ×2) を State と同期
 │   ├── tools/slice.py         # 4 枚のスプライトシートを 36 個に分割
 │   ├── assets/raw/            # 元シート画像置き場 (LittleFS には焼かない)
 │   └── data/                  # LittleFS イメージ (pio run -t uploadfs で焼く)
@@ -79,11 +80,10 @@ M5Stack 公式スタックちゃん (CoreS3 SE) を、X68000 擬人化キャラ 
 
 ### 実機到着後
 - [ ] PDM マイクの WAV ヘッダとサンプリングが Whisper と整合するか確認
-- [ ] サーボ (首振り) のピン番号確定と Avatar との同期
+- [x] サーボ (首振り) を State 遷移に同期 (`servo_motion.h`)。ピン番号 (`SERVO_YAW_PIN` / `SERVO_PITCH_PIN`) は実機の配線で確定する
 - [ ] 口パクと再生 PCM のエンベロープ同期
 - [ ] ウェイクワード化 (現状は push-to-talk)
 - [x] ぺけ子ちゃん 36 表情を LittleFS に焼く方式に切替 (`pekeko_face.h` + `face_map.h`)
 - [x] PCM RMS による 2 フレーム口パク
 - [x] X68 風起動チャイム + 応答前 ack beep (`chime.h`)
 - [ ] チャイムを本格的に FM 風にする (M5Unified の波形カスタマイズ or 短いPCMサンプル)
-- [ ] サーボ (首振り) のピン番号確定と表情と同期

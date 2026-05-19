@@ -71,16 +71,29 @@ sequenceDiagram
 ## ピン/ハード設定 (暫定)
 
 CoreS3 SE は I2C 周辺と内蔵マイク/スピーカが固定のため、基本は M5Unified が面倒を見る。
-スタックちゃんの首振りサーボ (SG90 ×2) は Port.A / Port.B 経由が一般的:
+スタックちゃんの首振りサーボ (SG90 ×2) は [firmware/include/servo_motion.h](../firmware/include/servo_motion.h) で ESP32Servo 経由で制御:
 
 | 用途        | 想定ピン        | メモ |
 |-------------|-----------------|------|
-| 首 Yaw      | GPIO 1 (Port.B) | PWM, 50Hz |
-| 首 Pitch    | GPIO 2 (Port.B) | PWM, 50Hz |
+| 首 Yaw      | GPIO 1 (Port.B) | PWM, 50Hz, 500-2400us |
+| 首 Pitch    | GPIO 2 (Port.B) | PWM, 50Hz, 500-2400us |
 | 内蔵マイク  | M5.Mic          | M5Unified 経由 |
 | 内蔵スピーカ| M5.Speaker      | M5Unified 経由 |
 
-> 実機が来たら **Stack-chan Takao Base** の配線図と照合して `config.h` を更新する。
+> 実機が来たら **Stack-chan Takao Base** の配線図と照合して `config.h` を更新する。サーボ未接続でも `begin()` が失敗するだけで firmware は通常起動する (会話パイプラインは独立)。
+
+### 状態 → サーボ姿勢のマッピング
+
+| State       | Yaw   | Pitch | 印象 |
+|-------------|-------|-------|------|
+| Boot done   | 70↔110 swing ×3 | 88 | face_36 と同期して「バイバイ」 |
+| Idle        | 90    | 88    | 直立 / 中立 |
+| Listening   | 90    | 100   | ややお辞儀 (聞いてる姿勢) |
+| Thinking    | 78    | 94    | 小首を傾げる |
+| Speaking    | 90    | 80↔86 | 口パクの RMS と同期して上下に頷く |
+| Error       | (変化なし) | (変化なし) | 直前姿勢を維持 |
+
+角度は `firmware/include/servo_motion.h` の `YAW_CENTER` / `PITCH_NEUTRAL` / `PITCH_FORWARD` を弄れば調整可能。
 
 ## なぜこの分担か
 

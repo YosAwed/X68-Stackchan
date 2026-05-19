@@ -20,16 +20,25 @@
 #include "pekeko_face.h"
 #include "face_map.h"
 #include "chime.h"
+#include "servo_motion.h"
 
 using namespace stackchan;
 
 static PekekoFace     g_face;
 static AudioRecorder  g_rec;
+static ServoMotion    g_servo;
 static State          g_state = State::Boot;
 
 static void setState(State s, int face_id = -1) {
     g_state = s;
     if (face_id > 0) g_face.show(face_id);
+    switch (s) {
+        case State::Idle:      g_servo.setIdle();      break;
+        case State::Listening: g_servo.setListening(); break;
+        case State::Thinking:  g_servo.setThinking();  break;
+        case State::Speaking:  g_servo.setSpeaking();  break;
+        default: /* Boot / Error は姿勢を変えない */    break;
+    }
 }
 
 static bool connectWiFi() {
@@ -94,6 +103,7 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size) {
                 g_face.show(next);
                 last_face = next;
             }
+            g_servo.updateSpeakingByRms(rms, RMS_THRESH);
         }
         delay(4);
     }
@@ -124,13 +134,17 @@ void setup() {
         g_face.show(faces::FACE_ERR_GENERIC);
         return;
     }
+    if (!g_servo.begin()) {
+        // サーボ未接続でも続行 (会話パイプラインは独立で動く)
+        Serial.println("Servo init failed; continuing without servo");
+    }
     if (!connectWiFi()) {
         g_face.show(faces::FACE_ERR_WIFI);
         return;
     }
 
-    // 短いウェーブの後、Idle 表情へ
-    delay(700);
+    // バイバイ顔 (face_36) + サーボの手振り
+    g_servo.bootGreet();
     setState(State::Idle, faces::FACE_IDLE);
 }
 
@@ -156,7 +170,7 @@ void loop() {
                 if (r.ok) {
                     Serial.printf("[USER] %s\n", r.user_text.c_str());
                     Serial.printf("[BOT ] %s\n", r.bot_text.c_str());
-                    g_state = State::Speaking;
+                    setState(State::Speaking);    // 顔は lipsync 側で操作するので face_id 渡さない
                     playAckBeep();
                     playWavWithLipsync(r.body, r.body_size);
                     free(r.body);
