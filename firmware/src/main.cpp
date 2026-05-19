@@ -1,7 +1,7 @@
 // ========================================================
 //  X68-Stackchan (ぺけ子ちゃん版) ファームウェア (CoreS3 SE)
 //
-//  Push-to-talk → Mac mini に WAV を POST → 応答 WAV を再生
+//  Push-to-talk → 母艦 PC に WAV を POST → 応答 WAV を再生
 //  会話中はぺけ子ちゃんの表情 (face_NN.jpg in LittleFS) を切り替える
 //  発話中は PCM の RMS で「口閉/口開」の 2 フレーム口パク
 // ========================================================
@@ -51,6 +51,24 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size) {
     // WAV ヘッダから data チャンクを探す (簡易: 標準的な配置を仮定)
     const uint8_t* pcm = wav + 44;
     size_t pcm_bytes = size - 44;
+    uint32_t wav_sr = MIC_SAMPLE_RATE;
+    uint16_t wav_channels = 1;
+    uint16_t wav_bits = 16;
+    uint16_t wav_block = 2;
+
+    for (size_t i = 12; i + 24 <= size && i < 256; ++i) {
+        if (memcmp(wav + i, "fmt ", 4) == 0) {
+            uint32_t fmt_size; memcpy(&fmt_size, wav + i + 4, 4);
+            if (fmt_size >= 16 && i + 8 + fmt_size <= size) {
+                memcpy(&wav_channels, wav + i + 10, 2);
+                memcpy(&wav_sr,       wav + i + 12, 4);
+                memcpy(&wav_block,    wav + i + 20, 2);
+                memcpy(&wav_bits,     wav + i + 22, 2);
+            }
+            break;
+        }
+    }
+
     // 安全策: "data" タグを探して位置を上書き
     for (size_t i = 12; i + 8 <= size && i < 256; ++i) {
         if (memcmp(wav + i, "data", 4) == 0) {
@@ -61,9 +79,14 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size) {
             break;
         }
     }
-    pcm_bytes &= ~static_cast<size_t>(1);        // 16-bit PCM の端数は読まない
-    const size_t samples = pcm_bytes / 2;       // 16-bit PCM mono 想定
-    const uint32_t sr    = MIC_SAMPLE_RATE;     // TTS 側で 16k に統一済み
+    if (wav_bits != 16 || wav_channels == 0 || wav_block < 2) {
+        M5.Speaker.setVolume(SPK_VOLUME);
+        M5.Speaker.playWav(wav, size);
+        while (M5.Speaker.isPlaying()) delay(4);
+        return;
+    }
+    pcm_bytes -= pcm_bytes % wav_block;
+    const size_t frames = pcm_bytes / wav_block;
 
     M5.Speaker.setVolume(SPK_VOLUME);
     const uint32_t t0 = millis();
@@ -78,13 +101,13 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size) {
         if (now - last_update >= 40) {           // 25 fps 相当で更新
             last_update = now;
             const uint32_t elapsed_ms = now - t0;
-            const size_t pos = (size_t)elapsed_ms * sr / 1000;
+            const size_t pos = (size_t)elapsed_ms * wav_sr / 1000;
             // 前後 ±256 サンプルで RMS
             const size_t lo = pos > 256 ? pos - 256 : 0;
-            const size_t hi = pos + 256 < samples ? pos + 256 : samples;
+            const size_t hi = pos + 256 < frames ? pos + 256 : frames;
             int64_t sumsq = 0;
             for (size_t i = lo; i < hi; ++i) {
-                int16_t s; std::memcpy(&s, pcm + i * 2, 2);
+                int16_t s; std::memcpy(&s, pcm + i * wav_block, 2);
                 sumsq += (int32_t)s * s;
             }
             const int rms = (hi > lo) ? (int)std::sqrt((double)sumsq / (hi - lo)) : 0;
