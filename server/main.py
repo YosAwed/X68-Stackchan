@@ -45,10 +45,7 @@ llm = LLM(
     model=os.getenv("OLLAMA_MODEL", "qwen2.5:7b"),
     history_turns=int(os.getenv("HISTORY_TURNS", "6")),
 )
-tts = TTS(
-    host=os.getenv("VOICEVOX_HOST", "http://127.0.0.1:50021"),
-    speaker=int(os.getenv("VOICEVOX_SPEAKER", "3")),
-)
+tts = TTS()  # backend / env 解釈は tts.py + tts_<backend>.py に委譲
 
 app = FastAPI(title="Stack-chan server", version="0.1.0")
 

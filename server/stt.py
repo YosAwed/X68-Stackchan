@@ -13,9 +13,9 @@ log = logging.getLogger(__name__)
 
 class STT:
     def __init__(self, model_name: str, device: str = "auto", language: str = "ja"):
-        # Apple Silicon は compute_type="int8" で軽く動く
-        # CUDA があるなら "float16"
-        compute_type = "int8" if device in ("cpu", "auto") else "float16"
+        # CUDA なら float16 が速い。CPU フォールバックは int8。
+        # device="auto" は faster-whisper 側で CUDA を優先検出するので float16 を選ぶ。
+        compute_type = "int8" if device == "cpu" else "float16"
         log.info("Loading whisper model=%s device=%s compute=%s",
                  model_name, device, compute_type)
         self.model = WhisperModel(model_name, device=device, compute_type=compute_type)
