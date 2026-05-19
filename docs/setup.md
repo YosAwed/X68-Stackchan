@@ -1,5 +1,7 @@
 # セットアップ手順
 
+> **NVIDIA GPU が無い母艦で動かしたい場合は [setup-macmini.md](setup-macmini.md) (VOICEVOX 経路) を参照**。こちらは Windows + WSL2 + CUDA 経路 (Irodori-TTS-Lite) の手順。
+
 ## 0. 用意するもの
 
 - M5Stack CoreS3 SE 本体 + USB-C ケーブル
@@ -39,7 +41,7 @@ ollama pull qwen2.5:7b  # 日本語の出が素直なものを推奨
 
 ### 1-2. server/ の venv 作成と依存インストール
 
-**順序が重要**: 先に venv を作って activate し、その中で torch (CUDA) → 改造済み Irodori fork → `requirements.txt` の順に入れる (venv の外で入れても見えない)。
+**順序が重要**: 先に venv を作って activate し、その中で torch (CUDA) → 改造済み Irodori fork → `requirements-cuda.txt` の順に入れる (venv の外で入れても見えない)。
 
 ```bash
 cd server
@@ -53,7 +55,7 @@ pip install --index-url https://download.pytorch.org/whl/cu121 torch torchaudio
 pip install git+https://github.com/<YOU>/Irodori-TTS-Lite.git@main
 
 # (3) 残り (FastAPI / faster-whisper / pyopenjtalk など)
-pip install -r requirements.txt
+pip install -r requirements-cuda.txt
 ```
 
 > **親パッケージ `irodori_tts` について**: Irodori-TTS-Lite は量子化パッチ層で、実推論は `irodori_tts.inference_runtime` (parent package) を呼ぶ。fork が transitive 依存として pull するならそのままで OK。`ModuleNotFoundError: infer` が出たら fork の `pyproject.toml` を確認し、親パッケージ名を確かめて手動 `pip install` する。

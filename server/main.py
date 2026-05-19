@@ -45,12 +45,7 @@ llm = LLM(
     model=os.getenv("OLLAMA_MODEL", "qwen2.5:7b"),
     history_turns=int(os.getenv("HISTORY_TURNS", "6")),
 )
-tts = TTS(
-    ref_wav=os.getenv("IRODORI_REF_WAV") or None,
-    device=os.getenv("IRODORI_DEVICE", "cuda"),
-    force_fp16=os.getenv("IRODORI_FORCE_FP16", "1") == "1",
-    checkpoint=os.getenv("IRODORI_CHECKPOINT") or None,
-)
+tts = TTS()  # backend / env 解釈は tts.py + tts_<backend>.py に委譲
 
 app = FastAPI(title="Stack-chan server", version="0.1.0")
 

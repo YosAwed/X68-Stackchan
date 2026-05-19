@@ -4,6 +4,8 @@ M5Stack 公式スタックちゃん (CoreS3 SE) を、X68000 擬人化キャラ 
 推論・音声認識・音声合成はすべて母艦の **Windows + WSL2 (NVIDIA CUDA)** 上で走らせる、**完全ローカルの AI 会話エージェント**。クラウド API は使わない。
 
 > TTS に [Irodori-TTS-Lite](https://github.com/kizuna-intelligence/Irodori-TTS-Lite) を採用している関係で、母艦は CUDA 必須 (Ampere 以降推奨)。当初想定の Mac mini からは構成変更している。
+>
+> Mac mini など NVIDIA GPU が無い母艦で動かしたい場合は、VOICEVOX 経路の代替セットアップ [docs/setup-macmini.md](docs/setup-macmini.md) を用意してある。`.env` で `TTS_BACKEND=voicevox` に切り替えるだけ。
 
 起動時に Human68k 風のスプラッシュが流れて、ぺけ子ちゃんの Avatar が立ち上がる、というのが完成形のイメージ。
 ぺけ子ちゃんのアートワーク自体は同人由来なのでリポには同梱せず、`firmware/include/pekeko_theme.h` のカラーパレットと、好みの顔絵差し替えポイントだけを公開している。
@@ -28,7 +30,8 @@ M5Stack 公式スタックちゃん (CoreS3 SE) を、X68000 擬人化キャラ 
 ├── README.md                  # このファイル
 ├── docs/
 │   ├── architecture.md        # 詳細アーキテクチャ
-│   └── setup.md               # セットアップ手順
+│   ├── setup.md               # セットアップ手順 (CUDA / WSL2 / Irodori)
+│   └── setup-macmini.md       # 代替セットアップ (Mac mini / VOICEVOX)
 ├── firmware/                  # CoreS3 側 (PlatformIO + Arduino)
 │   ├── platformio.ini
 │   ├── partitions_pekeko.csv  # OTA無し / LittleFS 10MB
@@ -46,12 +49,15 @@ M5Stack 公式スタックちゃん (CoreS3 SE) を、X68000 擬人化キャラ 
 │   ├── assets/raw/            # 元シート画像置き場 (LittleFS には焼かない)
 │   └── data/                  # LittleFS イメージ (pio run -t uploadfs で焼く)
 │       └── face_01.jpg .. face_36.jpg
-└── server/                    # 母艦側 (WSL2 / Python / FastAPI)
-    ├── requirements.txt
+└── server/                    # 母艦側 (Python / FastAPI)
+    ├── requirements-cuda.txt    # WSL2 + CUDA 版 (Irodori-TTS-Lite)
+    ├── requirements-macmini.txt # Mac mini 版 (VOICEVOX)
     ├── main.py                # /chat エンドポイント
-    ├── stt.py                 # faster-whisper ラッパ (CUDA)
+    ├── stt.py                 # faster-whisper ラッパ
     ├── llm.py                 # Ollama クライアント
-    ├── tts.py                 # Irodori-TTS-Lite (in-process / CUDA)
+    ├── tts.py                 # backend dispatcher (TTS_BACKEND env で切替)
+    ├── tts_irodori.py         # Irodori-TTS-Lite (in-process / CUDA)
+    ├── tts_voicevox.py        # VOICEVOX HTTP (Mac mini など)
     ├── persona.py             # スタックちゃんのキャラ付け system prompt
     └── .env.example           # ホスト・ポート・モデル名・参照音声などの設定
 ```
