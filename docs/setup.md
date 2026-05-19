@@ -98,7 +98,7 @@ curl -X POST -F "audio=@hello.wav" http://localhost:8000/chat --output reply.wav
 
 `reply.wav` がぺけ子ちゃんの声になっていれば成功。
 
-> **性能上の注意**: 現在の [server/tts.py](../server/tts.py) は upstream の CLI shape (`sys.argv` を組んで `infer.main()` を叩き、tempfile WAV を読み戻す) をそのまま in-process で再現している。`infer.main()` が呼び出しごとに `InferenceRuntime` を作り直す実装なら、`/chat` の TTS フェーズが毎回秒オーダー。fork 側で `InferenceRuntime` をシングルトン化して `synthesize(text) -> waveform` をエクスポートし、`server/tts.py` の tempfile + sys.argv ブロック (約 20 行) を直接呼び出しに差し替えるのが本筋。
+> **性能上の注意**: 現在の [server/tts_irodori.py](../server/tts_irodori.py) は upstream の CLI shape (`sys.argv` を組んで `infer.main()` を叩き、tempfile WAV を読み戻す) をそのまま in-process で再現している。`infer.main()` が呼び出しごとに `InferenceRuntime` を作り直す実装なら、`/chat` の TTS フェーズが毎回秒オーダー。fork 側で `InferenceRuntime` をシングルトン化して `synthesize(text) -> waveform` をエクスポートし、`server/tts_irodori.py` の tempfile + sys.argv ブロックを直接呼び出しに差し替えるのが本筋。
 
 ### 1-4. 母艦の IP を控える
 

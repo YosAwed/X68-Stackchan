@@ -75,8 +75,8 @@ M5Stack 公式スタックちゃん (CoreS3 SE) を、X68000 擬人化キャラ 
 ## 既知の TODO / 注意点
 
 ### TTS (Irodori-TTS-Lite) 周り
-- [ ] **モデルロード回数の確認**: 現在の [server/tts.py](server/tts.py) は upstream の `example/run_tts.py` を in-process 再現 (sys.argv を組んで `infer.main()` を呼ぶ) しているので、`/chat` のたびに `InferenceRuntime` が再構築されると秒オーダーで遅くなる。最初の起動と 2 回目の `/chat` で所要時間を計測して切り分け
-- [ ] **fork 側に `synthesize(text) -> waveform` を露出**: 上記が遅ければ、`irodori_tts.inference_runtime.InferenceRuntime` をシングルトン化してクリーンな関数として export。[server/tts.py](server/tts.py) の tempfile + sys.argv ブロック (約 20 行) を直接呼び出しに置換できる
+- [ ] **モデルロード回数の確認**: 現在の [server/tts_irodori.py](server/tts_irodori.py) は upstream の `example/run_tts.py` を in-process 再現 (sys.argv を組んで `infer.main()` を呼ぶ) しているので、`/chat` のたびに `InferenceRuntime` が再構築されると秒オーダーで遅くなる。最初の起動と 2 回目の `/chat` で所要時間を計測して切り分け
+- [ ] **fork 側に `synthesize(text) -> waveform` を露出**: 上記が遅ければ、`irodori_tts.inference_runtime.InferenceRuntime` をシングルトン化してクリーンな関数として export。[server/tts_irodori.py](server/tts_irodori.py) の tempfile + sys.argv ブロックを直接呼び出しに置換できる
 - [ ] **`IRODORI_REF_WAV` の確定**: ぺけ子ちゃん声の参照音声 WAV を用意するか、`--no-ref` (voice-design checkpoint) のまま行くか決める
 - [x] **`infer` モジュール = 親パッケージ `irodori_tts` の import 確認**: [YosAwed/Irodori-TTS-Lite](https://github.com/YosAwed/Irodori-TTS-Lite) フォークが `irodori-tts` と `infer` を pip 依存として同梱済み
 
