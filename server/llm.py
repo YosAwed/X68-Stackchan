@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import logging
-from collections import defaultdict, deque
+from collections import OrderedDict, deque
 from typing import Deque, Dict, List
 
 import httpx
@@ -22,18 +22,31 @@ class LLM:
         model: str,
         history_turns: int = 6,
         timeout_s: float = 60.0,
+        temperature: float = 0.7,
+        num_predict: int = 200,
+        max_sessions: int = 16,
     ):
         self.host = host.rstrip("/")
         self.model = model
         self.history_turns = history_turns
+        self.temperature = temperature
+        self.num_predict = num_predict
+        self.max_sessions = max(1, max_sessions)
         self._client = httpx.Client(base_url=self.host, timeout=timeout_s)
         # {sid: deque[(role, content)]}  role in {"user", "assistant"}
-        self._history: Dict[str, Deque[tuple[str, str]]] = defaultdict(
-            lambda: deque(maxlen=self.history_turns * 2)
-        )
+        self._history: Dict[str, Deque[tuple[str, str]]] = OrderedDict()
 
     def chat(self, session_id: str, user_text: str) -> str:
-        hist = self._history[session_id]
+        hist = self._history.get(session_id)
+        if hist is None:
+            hist = deque(maxlen=self.history_turns * 2)
+            self._history[session_id] = hist
+        elif isinstance(self._history, OrderedDict):
+            self._history.move_to_end(session_id)
+        while len(self._history) > self.max_sessions:
+            dropped, _ = self._history.popitem(last=False)
+            log.info("LLM dropped old session history: %s", dropped)
+
         messages: List[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
         for role, content in hist:
             messages.append({"role": role, "content": content})
@@ -44,8 +57,8 @@ class LLM:
             "messages": messages,
             "stream": False,
             "options": {
-                "temperature": 0.7,
-                "num_predict": 200,    # スタックちゃんは短く返す
+                "temperature": self.temperature,
+                "num_predict": self.num_predict,    # スタックちゃんは短く返す
             },
         }
         log.info("LLM ▶ %r", user_text)
@@ -69,6 +82,10 @@ class LLM:
                 "ok": self.model in names,
                 "host": self.host,
                 "model": self.model,
+                "temperature": self.temperature,
+                "num_predict": self.num_predict,
+                "sessions": len(self._history),
+                "max_sessions": self.max_sessions,
                 "available_models": sorted(n for n in names if n),
             }
         except Exception as e:
@@ -76,6 +93,8 @@ class LLM:
                 "ok": False,
                 "host": self.host,
                 "model": self.model,
+                "sessions": len(self._history),
+                "max_sessions": self.max_sessions,
                 "error": str(e),
             }
 

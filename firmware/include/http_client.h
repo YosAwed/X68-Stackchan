@@ -17,6 +17,8 @@ struct ChatResponse {
     int       http_status   = 0;
     String    user_text;
     String    bot_text;
+    String    timing;
+    String    tts_backend;
 };
 
 class ChatClient {
@@ -94,6 +96,10 @@ public:
                 r.user_text = urlDecode(value);
             } else if (name == "x-stackchan-bot-text") {
                 r.bot_text  = urlDecode(value);
+            } else if (name == "x-stackchan-timing") {
+                r.timing = value;
+            } else if (name == "x-stackchan-tts-backend") {
+                r.tts_backend = value;
             }
         }
 

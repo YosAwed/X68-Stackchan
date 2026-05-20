@@ -82,6 +82,9 @@ infer.main()
 cp .env.example .env
 # .env を編集:
 #   OLLAMA_MODEL     — pull したモデル名と一致させる
+#   OLLAMA_TEMPERATURE / OLLAMA_NUM_PREDICT — 応答の揺れと長さ
+#   MAX_SESSIONS     — メモリ上に保持する sid 数
+#   MAX_AUDIO_BYTES  — /chat で受け付ける WAV の最大サイズ
 #   WHISPER_MODEL    — VRAM に余裕があれば medium / large-v3
 #   IRODORI_REF_WAV  — 参照音声 WAV のパス (空なら --no-ref / voice-design)
 #   IRODORI_CHECKPOINT — 通常は空で OK (HF から auto-download)
@@ -107,6 +110,7 @@ curl -D - -X POST -F "audio=@hello.wav" http://localhost:8000/chat --output repl
 `reply.wav` がぺけ子ちゃんの声になっていれば成功。
 
 `curl -D -` で表示される `X-Stackchan-Timing` に `stt` / `llm` / `tts` / `total` の処理時間が出る。Irodori 経路では `/ready` の `components.tts.last_infer_ms` でも直近の推論時間を確認できる。
+CoreS3 のシリアルログにも `[TIME]` と `[TTS ]` が表示される。
 
 > **性能上の注意**: 現在の [server/tts_irodori.py](../server/tts_irodori.py) は upstream の CLI shape (`sys.argv` を組んで `infer.main()` を叩き、tempfile WAV を読み戻す) をそのまま in-process で再現している。`infer.main()` が呼び出しごとに `InferenceRuntime` を作り直す実装なら、`/chat` の TTS フェーズが毎回秒オーダー。処理時間は `X-Stackchan-Timing` と `/ready` の `components.tts.last_*` で確認する。fork 側で `InferenceRuntime` をシングルトン化して `synthesize(text) -> waveform` をエクスポートし、`server/tts_irodori.py` の tempfile + sys.argv ブロックを直接呼び出しに差し替えるのが本筋。
 
@@ -186,6 +190,7 @@ pio device monitor -e m5stack-cores3
 |------|----------|
 | `WiFi connected` が出ない | `config.h` の SSID/PASS、2.4GHz 帯か |
 | 録音できているが応答が無音 | 母艦側の uvicorn ログを確認。Whisper でテキスト化されているか |
+| `/chat` が `413` になる | 録音 WAV が `MAX_AUDIO_BYTES` を超えている。`MAX_REC_SECONDS` を下げるか `MAX_AUDIO_BYTES` を上げる |
 | 応答テキストは出るのに音が出ない | `Irodori-TTS-Lite ready` ログが出ているか / `nvidia-smi` で VRAM が足りているか |
 | `CUDA out of memory` | `WHISPER_MODEL` を下げる、`IRODORI_FORCE_FP16=1` を維持、他の GPU プロセスを落とす |
 | `Triton` 関連エラー | WSL2 / Linux で実行しているか確認。Windows ネイティブだと Triton が動かない |

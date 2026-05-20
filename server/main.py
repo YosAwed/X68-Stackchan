@@ -51,10 +51,15 @@ llm = LLM(
     host=os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434"),
     model=os.getenv("OLLAMA_MODEL", "qwen2.5:7b"),
     history_turns=int(os.getenv("HISTORY_TURNS", "6")),
+    timeout_s=float(os.getenv("OLLAMA_TIMEOUT_S", "60")),
+    temperature=float(os.getenv("OLLAMA_TEMPERATURE", "0.7")),
+    num_predict=int(os.getenv("OLLAMA_NUM_PREDICT", "200")),
+    max_sessions=int(os.getenv("MAX_SESSIONS", "16")),
 )
 tts = TTS()  # backend / env 解釈は tts.py + tts_<backend>.py に委譲
 
 app = FastAPI(title="Stack-chan server", version="0.1.0")
+MAX_AUDIO_BYTES = int(os.getenv("MAX_AUDIO_BYTES", str(2 * 1024 * 1024)))
 
 
 def _elapsed_ms(t0: float) -> float:
@@ -114,6 +119,8 @@ async def chat(
     wav_in = await audio.read()
     if len(wav_in) < 44:
         raise HTTPException(status_code=400, detail="audio too short")
+    if len(wav_in) > MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=413, detail="audio too large")
 
     try:
         t0 = time.perf_counter()

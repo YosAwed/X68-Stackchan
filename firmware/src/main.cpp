@@ -179,6 +179,12 @@ void loop() {
                 if (r.ok) {
                     Serial.printf("[USER] %s\n", r.user_text.c_str());
                     Serial.printf("[BOT ] %s\n", r.bot_text.c_str());
+                    if (r.timing.length() > 0) {
+                        Serial.printf("[TIME] %s\n", r.timing.c_str());
+                    }
+                    if (r.tts_backend.length() > 0) {
+                        Serial.printf("[TTS ] %s\n", r.tts_backend.c_str());
+                    }
                     g_state = State::Speaking;
                     playAckBeep();
                     playWavWithLipsync(r.body, r.body_size);

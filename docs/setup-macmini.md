@@ -50,6 +50,10 @@ cp .env.example .env
 #   WHISPER_DEVICE=auto        # Apple Silicon は auto / cpu
 #   VOICEVOX_SPEAKER=3         # 好みの話者
 #   OLLAMA_MODEL=qwen2.5:7b
+#   OLLAMA_TEMPERATURE=0.7
+#   OLLAMA_NUM_PREDICT=200
+#   MAX_SESSIONS=16
+#   MAX_AUDIO_BYTES=2097152
 
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
@@ -59,11 +63,13 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 別端末から疎通確認:
 
 ```bash
-# 適当な短い WAV (16k mono) を投げる
-curl -X POST -F "audio=@hello.wav" http://localhost:8000/chat --output reply.wav
+curl http://localhost:8000/ready
+curl -D - -X POST -F "text=テストです" http://localhost:8000/speak --output speak.wav
+curl -D - -X POST -F "text=こんにちは" http://localhost:8000/chat_text --output chat_text.wav
+curl -D - -X POST -F "audio=@hello.wav" http://localhost:8000/chat --output reply.wav
 ```
 
-`reply.wav` がスタックちゃんの声になっていれば OK。
+`reply.wav` がスタックちゃんの声になっていれば OK。`X-Stackchan-Timing` で LLM / TTS / total の処理時間を確認できる。
 
 ### 1-4. Mac mini の IP を控える
 
@@ -85,6 +91,7 @@ ipconfig getifaddr en0   # 例: 192.168.1.42
 |------|----------|
 | `WiFi connected` が出ない | `config.h` の SSID/PASS、2.4GHz 帯か |
 | 録音できているが応答が無音 | Mac mini 側の uvicorn ログを確認。Whisper でテキスト化されているか |
+| `/chat` が `413` になる | 録音 WAV が `MAX_AUDIO_BYTES` を超えている。`MAX_REC_SECONDS` を下げるか `MAX_AUDIO_BYTES` を上げる |
 | 起動ログが `TTS backend = irodori` になる | `.env` の `TTS_BACKEND=voicevox` が読まれていない (`.env` の位置 / 改行コード確認) |
 | `tts_irodori` の import エラーが出る | `TTS_BACKEND=irodori` のまま起動している。`.env` を見直す |
 | 応答テキストは出るのに音が出ない | VOICEVOX engine の port 50021 が開いているか / `VOICEVOX_HOST` が正しいか |

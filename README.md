@@ -76,6 +76,7 @@ M5Stack 公式スタックちゃん (CoreS3 SE) を、X68000 擬人化キャラ 
 
 ### TTS (Irodori-TTS-Lite) 周り
 - [x] **TTS/LLM/STT の処理時間計測**: `/chat` / `/chat_text` / `/speak` は `X-Stackchan-Timing` を返す。Irodori 経路は `/ready` の `tts.last_*` とログで推論時間・変換時間・推定秒数を確認できる
+- [x] **実機ログでの切り分け補助**: CoreS3 のシリアルログに `[TIME]` / `[TTS ]` を出し、サーバ側は LLM 設定・履歴上限・音声サイズ上限を `.env` で調整可能
 - [ ] **fork 側に `synthesize(text) -> waveform` を露出**: 上記が遅ければ、`irodori_tts.inference_runtime.InferenceRuntime` をシングルトン化してクリーンな関数として export。[server/tts_irodori.py](server/tts_irodori.py) の tempfile + sys.argv ブロックを直接呼び出しに置換できる
 - [ ] **`IRODORI_REF_WAV` の確定**: ぺけ子ちゃん声の参照音声 WAV を用意するか、`--no-ref` (voice-design checkpoint) のまま行くか決める
 - [x] **`infer` モジュール = 親パッケージ `irodori_tts` の import 確認**: [YosAwed/Irodori-TTS-Lite](https://github.com/YosAwed/Irodori-TTS-Lite) フォークが `irodori-tts` と `infer` を pip 依存として同梱済み
