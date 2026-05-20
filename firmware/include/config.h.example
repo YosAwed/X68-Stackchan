@@ -31,11 +31,10 @@ static constexpr uint32_t MAX_REC_SECONDS = 10;
 static constexpr uint8_t  SPK_VOLUME = 180; // 0..255
 
 // ---- サーボ (首振り) ----------------------------------------
-// SG90 x2。Port.B (GROVE) に接続する場合は GPIO 8 / 9。
+// SCS0009 シリアルサーボ x2。StackChan 基板経由で GPIO6/7 固定。
 // サーボを使わない場合は SERVO_ENABLED を 0 にする。
 #define SERVO_ENABLED 1
-static constexpr int SERVO_YAW_PIN   = 8;  // Port.B — パン (左右)
-static constexpr int SERVO_PITCH_PIN = 9;  // Port.B — チルト (上下)
+// ピン番号は servo_controller.h に固定 (GPIO6=TX, GPIO7=RX)
 
 // ---- HTTP タイムアウト --------------------------------------
 // STT + LLM + TTS の合計を待つ。GPU やモデルサイズに応じて調整する。
