@@ -27,6 +27,8 @@ import logging
 import os
 import sys
 import tempfile
+import threading
+import time
 import wave
 from pathlib import Path
 
@@ -57,12 +59,37 @@ class TTS:
         self._checkpoint = irodori_tts_lite.resolve_checkpoint(checkpoint)
         self._ref_wav = ref_wav
         self._device = device
+        self._force_fp16 = force_fp16
+        self._lock = threading.Lock()
+        self._calls = 0
+        self._last_seconds = None
+        self._last_infer_ms = None
+        self._last_convert_ms = None
+        self._last_total_ms = None
         log.info(
             "Irodori-TTS-Lite ready (device=%s, fp16=%s, ckpt=%s, ref=%s)",
             device, force_fp16, self._checkpoint, ref_wav or "<none/--no-ref>",
         )
 
+    def status(self) -> dict:
+        return {
+            "ok": True,
+            "backend": "irodori",
+            "device": self._device,
+            "force_fp16": self._force_fp16,
+            "checkpoint": str(self._checkpoint),
+            "ref_wav": self._ref_wav,
+            "cuda_available": bool(torch.cuda.is_available()),
+            "cuda_device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+            "calls": self._calls,
+            "last_seconds": self._last_seconds,
+            "last_infer_ms": self._last_infer_ms,
+            "last_convert_ms": self._last_convert_ms,
+            "last_total_ms": self._last_total_ms,
+        }
+
     def synthesize(self, text: str) -> bytes:
+        t0 = time.perf_counter()
         seconds = self._estimate_seconds(text)
 
         # infer.main() は --output-wav にファイルを書くので一時ファイルを用意
@@ -70,31 +97,47 @@ class TTS:
             tmp_path = tmp.name
 
         try:
-            import infer
-            infer.FIXED_SECONDS = float(seconds)
+            with self._lock:
+                import infer
+                infer.FIXED_SECONDS = float(seconds)
 
-            argv = [
-                sys.argv[0] if sys.argv else "irodori",
-                "--checkpoint", self._checkpoint,
-                "--text", text,
-                "--output-wav", tmp_path,
-            ]
-            if self._ref_wav is None:
-                argv.append("--no-ref")
+                argv = [
+                    sys.argv[0] if sys.argv else "irodori",
+                    "--checkpoint", self._checkpoint,
+                    "--text", text,
+                    "--output-wav", tmp_path,
+                ]
+                if self._ref_wav is None:
+                    argv.append("--no-ref")
+                else:
+                    argv.extend(["--ref-wav", self._ref_wav])
 
-            saved = sys.argv
-            sys.argv = argv
-            try:
-                infer.main()
-            finally:
-                sys.argv = saved
+                saved = sys.argv
+                sys.argv = argv
+                infer_t0 = time.perf_counter()
+                try:
+                    infer.main()
+                finally:
+                    sys.argv = saved
+                infer_ms = (time.perf_counter() - infer_t0) * 1000
 
-            raw = Path(tmp_path).read_bytes()
+                raw = Path(tmp_path).read_bytes()
         finally:
             Path(tmp_path).unlink(missing_ok=True)
 
+        convert_t0 = time.perf_counter()
         wav_bytes = self._to_16k_mono(raw)
-        log.info("TTS ◀ %d bytes (text=%r)", len(wav_bytes), text)
+        convert_ms = (time.perf_counter() - convert_t0) * 1000
+        total_ms = (time.perf_counter() - t0) * 1000
+        self._calls += 1
+        self._last_seconds = round(seconds, 3)
+        self._last_infer_ms = round(infer_ms, 1)
+        self._last_convert_ms = round(convert_ms, 1)
+        self._last_total_ms = round(total_ms, 1)
+        log.info(
+            "TTS ◀ %d bytes in %.1fms (infer=%.1fms convert=%.1fms seconds=%.2f text=%r)",
+            len(wav_bytes), total_ms, infer_ms, convert_ms, seconds, text,
+        )
         return wav_bytes
 
     @staticmethod

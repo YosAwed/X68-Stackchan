@@ -92,13 +92,23 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 初回起動で `Irodori-TTS-Lite ready` のログが出るまで数秒〜十数秒。別端末から疎通確認:
 
 ```bash
-# 適当な短い WAV (16k mono) を投げる
-curl -X POST -F "audio=@hello.wav" http://localhost:8000/chat --output reply.wav
+curl http://localhost:8000/ready
+
+# TTS 単体
+curl -D - -X POST -F "text=テストです" http://localhost:8000/speak --output speak.wav
+
+# LLM + TTS
+curl -D - -X POST -F "text=こんにちは" http://localhost:8000/chat_text --output chat_text.wav
+
+# 適当な短い WAV (16k mono) を投げて STT + LLM + TTS
+curl -D - -X POST -F "audio=@hello.wav" http://localhost:8000/chat --output reply.wav
 ```
 
 `reply.wav` がぺけ子ちゃんの声になっていれば成功。
 
-> **性能上の注意**: 現在の [server/tts_irodori.py](../server/tts_irodori.py) は upstream の CLI shape (`sys.argv` を組んで `infer.main()` を叩き、tempfile WAV を読み戻す) をそのまま in-process で再現している。`infer.main()` が呼び出しごとに `InferenceRuntime` を作り直す実装なら、`/chat` の TTS フェーズが毎回秒オーダー。fork 側で `InferenceRuntime` をシングルトン化して `synthesize(text) -> waveform` をエクスポートし、`server/tts_irodori.py` の tempfile + sys.argv ブロックを直接呼び出しに差し替えるのが本筋。
+`curl -D -` で表示される `X-Stackchan-Timing` に `stt` / `llm` / `tts` / `total` の処理時間が出る。Irodori 経路では `/ready` の `components.tts.last_infer_ms` でも直近の推論時間を確認できる。
+
+> **性能上の注意**: 現在の [server/tts_irodori.py](../server/tts_irodori.py) は upstream の CLI shape (`sys.argv` を組んで `infer.main()` を叩き、tempfile WAV を読み戻す) をそのまま in-process で再現している。`infer.main()` が呼び出しごとに `InferenceRuntime` を作り直す実装なら、`/chat` の TTS フェーズが毎回秒オーダー。処理時間は `X-Stackchan-Timing` と `/ready` の `components.tts.last_*` で確認する。fork 側で `InferenceRuntime` をシングルトン化して `synthesize(text) -> waveform` をエクスポートし、`server/tts_irodori.py` の tempfile + sys.argv ブロックを直接呼び出しに差し替えるのが本筋。
 
 ### 1-4. 母艦の IP を控える
 

@@ -52,7 +52,30 @@ sequenceDiagram
 | Error HTTP  | 16      | パニック      | サーバ接続失敗 |
 | No speech   | 06      | 困り (汗)     | 無音だった時 (将来用) |
 
-## API 仕様 (POST /chat)
+## API 仕様
+
+### GET /health
+
+プロセスが起動しているかだけを見る軽量ヘルスチェック。レスポンスは `{"ok": true}`。
+
+### GET /ready
+
+STT / LLM / TTS の準備状態をまとめて返す。Ollama モデル未 pull、VOICEVOX 未起動などの切り分けに使う。
+
+```json
+{
+  "ok": true,
+  "components": {
+    "stt": {"ok": true},
+    "llm": {"ok": true},
+    "tts": {"ok": true}
+  }
+}
+```
+
+Irodori 経路では `tts.calls`, `tts.last_infer_ms`, `tts.last_convert_ms`, `tts.last_total_ms` も返る。
+
+### POST /chat
 
 **Request**: `multipart/form-data`
 
@@ -66,7 +89,31 @@ sequenceDiagram
 - 成功: `200 OK`, `Content-Type: audio/wav`, body = 合成 WAV
 - 失敗: `4xx/5xx`, JSON `{"error": "..."}`
 
-オプションでデバッグ用に `X-Stackchan-User-Text` / `X-Stackchan-Bot-Text` ヘッダに認識結果と応答テキストを載せる。
+デバッグ用に次のヘッダを返す。
+
+| Header | 説明 |
+|--------|------|
+| `X-Stackchan-User-Text` | STT 結果。URL エンコード済み |
+| `X-Stackchan-Bot-Text` | 応答テキスト。URL エンコード済み |
+| `X-Stackchan-Timing` | `stt;dur=...`, `llm;dur=...`, `tts;dur=...`, `total;dur=...` の処理時間 |
+| `X-Stackchan-TTS-Backend` | `irodori` または `voicevox` |
+
+### POST /chat_text
+
+`text` を直接 LLM に渡して、応答文を TTS した WAV を返す。マイクなしで LLM + TTS の疎通を見る用途。
+
+| Field | Type | 説明 |
+|-------|------|------|
+| `text` | string | ユーザー発話テキスト |
+| `sid` | string | セッションID。会話履歴保持用 (任意) |
+
+### POST /speak
+
+`text` を直接 TTS した WAV を返す。Irodori / VOICEVOX 単体の切り分け用。
+
+| Field | Type | 説明 |
+|-------|------|------|
+| `text` | string | 合成したいテキスト |
 
 ## ピン/ハード設定 (暫定)
 

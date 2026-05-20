@@ -24,6 +24,26 @@ class TTS:
         self._client = httpx.Client(base_url=self.host, timeout=timeout_s)
         log.info("VOICEVOX backend ready (host=%s, speaker=%d)", self.host, self.speaker)
 
+    def status(self) -> dict:
+        try:
+            r = self._client.get("/version", timeout=2.0)
+            r.raise_for_status()
+            return {
+                "ok": True,
+                "backend": "voicevox",
+                "host": self.host,
+                "speaker": self.speaker,
+                "version": r.text.strip().strip('"'),
+            }
+        except Exception as e:
+            return {
+                "ok": False,
+                "backend": "voicevox",
+                "host": self.host,
+                "speaker": self.speaker,
+                "error": str(e),
+            }
+
     def synthesize(self, text: str) -> bytes:
         # 1) クエリを作る
         q = self._client.post(

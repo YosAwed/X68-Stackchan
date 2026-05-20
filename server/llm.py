@@ -59,5 +59,25 @@ class LLM:
         hist.append(("assistant", bot_text))
         return bot_text
 
+    def status(self) -> dict:
+        try:
+            r = self._client.get("/api/tags", timeout=2.0)
+            r.raise_for_status()
+            models = r.json().get("models", [])
+            names = {m.get("name") for m in models}
+            return {
+                "ok": self.model in names,
+                "host": self.host,
+                "model": self.model,
+                "available_models": sorted(n for n in names if n),
+            }
+        except Exception as e:
+            return {
+                "ok": False,
+                "host": self.host,
+                "model": self.model,
+                "error": str(e),
+            }
+
     def reset(self, session_id: str) -> None:
         self._history.pop(session_id, None)

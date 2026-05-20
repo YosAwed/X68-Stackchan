@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import io
 import logging
-from typing import Optional
 
 from faster_whisper import WhisperModel
 
@@ -16,10 +15,22 @@ class STT:
         # CUDA なら float16 が速い。CPU フォールバックは int8。
         # device="auto" は faster-whisper 側で CUDA を優先検出するので float16 を選ぶ。
         compute_type = "int8" if device == "cpu" else "float16"
+        self.model_name = model_name
+        self.device = device
+        self.compute_type = compute_type
+        self.language = language
         log.info("Loading whisper model=%s device=%s compute=%s",
                  model_name, device, compute_type)
         self.model = WhisperModel(model_name, device=device, compute_type=compute_type)
-        self.language = language
+
+    def status(self) -> dict:
+        return {
+            "ok": True,
+            "model": self.model_name,
+            "device": self.device,
+            "compute_type": self.compute_type,
+            "language": self.language,
+        }
 
     def transcribe(self, wav_bytes: bytes) -> str:
         """WAV (RIFF) のバイト列を渡してテキストを返す"""
