@@ -21,6 +21,9 @@
 #include "face_map.h"
 #include "chime.h"
 #include "servo_controller.h"
+#include "rgb_controller.h"
+#include "touch_handler.h"
+#include "imu_handler.h"
 
 using namespace stackchan;
 
@@ -30,9 +33,17 @@ static State          g_state = State::Boot;
 static bool           g_wait_release_after_auto_send = false;
 static uint32_t       g_last_mic_log_ms = 0;
 
+// 一時リアクション (なでなで / シェイク) の終了時刻
+static uint32_t g_reaction_end_ms = 0;
+
 #if SERVO_ENABLED
 static ServoController g_servo;
 #endif
+#if RGB_ENABLED
+static RgbController   g_rgb;
+#endif
+static TouchHandler    g_touch;
+static ImuHandler      g_imu;
 
 static void clearSideStatus() {
     const int dx = (M5.Display.width() - PekekoFace::kSize) / 2;
@@ -55,6 +66,9 @@ static void setState(State s, int face_id = -1) {
         case State::Speaking:  g_servo.goSpeaking();  break;
         default: break;
     }
+#endif
+#if RGB_ENABLED
+    g_rgb.onState(s);
 #endif
 }
 
@@ -196,6 +210,10 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size) {
                 const float w = constrain((float)rms / 8000.0f, 0.0f, 1.0f);
                 g_servo.setSpeakLipWeight(w);
                 g_servo.update();
+#if RGB_ENABLED
+                g_rgb.setSpeakRms(w);
+                g_rgb.update();
+#endif
             }
 #endif
         }
@@ -250,6 +268,9 @@ void setup() {
         Serial.println("[WARN] Servo init failed — check wiring");
     }
 #endif
+#if RGB_ENABLED
+    g_rgb.begin();
+#endif
 
     if (!g_rec.begin()) {
         g_face.show(faces::FACE_ERR_GENERIC);
@@ -277,15 +298,54 @@ void loop() {
     const bool pressed = M5.BtnA.isPressed();
 
     switch (g_state) {
-        case State::Idle:
+        case State::Idle: {
+            // リアクション終了チェック
+            if (g_reaction_end_ms > 0 && millis() > g_reaction_end_ms) {
+                g_reaction_end_ms = 0;
+                g_face.show(faces::FACE_IDLE);
+#if RGB_ENABLED
+                g_rgb.onState(State::Idle);
+#endif
+            }
+
+            // なでなで検出 (リアクション中は無視)
+            if (g_reaction_end_ms == 0 && g_touch.update()) {
+                g_face.show(faces::FACE_PET);
+#if RGB_ENABLED
+                g_rgb.setScene(RgbScene::Pet);
+#endif
+#if SERVO_ENABLED
+                g_servo.setTarget(0.0f, 0.3f, ServoController::LERP_FAST);
+#endif
+                playAckBeep();
+                g_reaction_end_ms = millis() + 2000;
+            }
+
+            // シェイク検出 (リアクション中は無視)
+            if (g_reaction_end_ms == 0 && g_imu.update()) {
+                g_face.show(faces::FACE_SHAKEN);
+#if RGB_ENABLED
+                g_rgb.setScene(RgbScene::Shaken);
+#endif
+#if SERVO_ENABLED
+                g_servo.setTarget(
+                    (float)(rand() % 5 - 2) * 0.3f,
+                    (float)(rand() % 3 - 1) * 0.2f,
+                    ServoController::LERP_FAST);
+#endif
+                playErrorBeep();
+                g_reaction_end_ms = millis() + 1500;
+            }
+
             if (!pressed) {
                 g_wait_release_after_auto_send = false;
             }
-            if (pressed && !g_wait_release_after_auto_send) {
+            if (pressed && !g_wait_release_after_auto_send && g_reaction_end_ms == 0) {
                 g_rec.start();
                 setState(State::Listening, faces::FACE_LISTENING);
             }
             break;
+        }
 
         case State::Listening: {
             g_rec.poll();
@@ -329,6 +389,9 @@ void loop() {
 
 #if SERVO_ENABLED
     g_servo.update();
+#endif
+#if RGB_ENABLED
+    g_rgb.update();
 #endif
 
     delay(5);

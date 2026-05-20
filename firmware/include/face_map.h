@@ -74,6 +74,9 @@ inline constexpr int FACE_ERR_TOO_LARGE = F_EMBARRASSED; // 413: 録音が長す
 inline constexpr int FACE_ERR_SERVER    = F_DIZZY;       // 5xx: サーバ内部エラー
 inline constexpr int FACE_ERR_TIMEOUT   = F_BORED;       // 接続失敗/タイムアウト
 inline constexpr int FACE_REC_OVERFLOW  = F_SURPRISED;   // 録音上限到達
+// インタラクション
+inline constexpr int FACE_PET           = F_BASHFUL;     // なでなで → はにかみ
+inline constexpr int FACE_SHAKEN        = F_DIZZY;       // シェイク → 目回し
 
 } // namespace faces
 } // namespace stackchan
