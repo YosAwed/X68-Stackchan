@@ -21,8 +21,53 @@ struct ChatResponse {
     String    tts_backend;
 };
 
+struct ReadyResponse {
+    bool   ok          = false;
+    int    http_status = 0;
+    String body;
+};
+
 class ChatClient {
 public:
+    static ReadyResponse ready() {
+        ReadyResponse r;
+
+        WiFiClient client;
+        if (!client.connect(SERVER_HOST, SERVER_PORT)) {
+            log_e("ready connect failed: %s:%u", SERVER_HOST, (unsigned)SERVER_PORT);
+            return r;
+        }
+        client.setTimeout(5000);
+
+        client.print("GET /ready HTTP/1.1\r\n");
+        client.printf("Host: %s:%u\r\n", SERVER_HOST, (unsigned)SERVER_PORT);
+        client.print("Accept: application/json\r\n");
+        client.print("Connection: close\r\n\r\n");
+
+        String status = client.readStringUntil('\n');
+        int sp1 = status.indexOf(' ');
+        int sp2 = status.indexOf(' ', sp1 + 1);
+        if (sp1 > 0 && sp2 > sp1) {
+            r.http_status = status.substring(sp1 + 1, sp2).toInt();
+        }
+
+        bool in_body = false;
+        uint32_t deadline = millis() + 5000;
+        while ((client.connected() || client.available()) && millis() < deadline) {
+            String line = client.readStringUntil('\n');
+            if (!in_body) {
+                if (line == "\r" || line.length() == 0) in_body = true;
+                continue;
+            }
+            if (r.body.length() < 4096) r.body += line;
+        }
+        r.ok = (r.http_status == 200) &&
+               (r.body.indexOf("\"ok\":true") >= 0 ||
+                r.body.indexOf("\"ok\": true") >= 0);
+        client.stop();
+        return r;
+    }
+
     // 録音 WAV をサーバに送って、応答 WAV を返す
     static ChatResponse send(const uint8_t* wav, size_t wav_size) {
         ChatResponse r;
