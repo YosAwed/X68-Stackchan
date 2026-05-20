@@ -20,6 +20,7 @@
 #include "pekeko_face.h"
 #include "face_map.h"
 #include "chime.h"
+#include "servo_controller.h"
 
 using namespace stackchan;
 
@@ -28,6 +29,10 @@ static AudioRecorder  g_rec;
 static State          g_state = State::Boot;
 static bool           g_wait_release_after_auto_send = false;
 static uint32_t       g_last_mic_log_ms = 0;
+
+#if SERVO_ENABLED
+static ServoController g_servo;
+#endif
 
 static void clearSideStatus() {
     const int dx = (M5.Display.width() - PekekoFace::kSize) / 2;
@@ -42,6 +47,15 @@ static void setState(State s, int face_id = -1) {
     g_state = s;
     if (face_id > 0) g_face.show(face_id);
     clearSideStatus();
+#if SERVO_ENABLED
+    switch (s) {
+        case State::Idle:      g_servo.goIdle();      break;
+        case State::Listening: g_servo.goListening(); break;
+        case State::Thinking:  g_servo.goThinking();  break;
+        case State::Speaking:  g_servo.goSpeaking();  break;
+        default: break;
+    }
+#endif
 }
 
 static void drawMicLevel(uint16_t peak, uint16_t rms) {
@@ -177,6 +191,13 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size) {
                 g_face.show(next);
                 last_face = next;
             }
+#if SERVO_ENABLED
+            {
+                const float w = constrain((float)rms / 8000.0f, 0.0f, 1.0f);
+                g_servo.setSpeakLipWeight(w);
+                g_servo.update();
+            }
+#endif
         }
         delay(4);
     }
@@ -223,6 +244,12 @@ void setup() {
         return;
     }
     g_face.show(faces::FACE_BOOT_DONE);
+
+#if SERVO_ENABLED
+    if (!g_servo.begin()) {
+        Serial.println("[WARN] Servo init failed — check wiring");
+    }
+#endif
 
     if (!g_rec.begin()) {
         g_face.show(faces::FACE_ERR_GENERIC);
@@ -299,6 +326,10 @@ void loop() {
         default:
             break;
     }
+
+#if SERVO_ENABLED
+    g_servo.update();
+#endif
 
     delay(5);
 }
