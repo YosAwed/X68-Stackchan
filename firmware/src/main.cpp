@@ -27,10 +27,69 @@ static PekekoFace     g_face;
 static AudioRecorder  g_rec;
 static State          g_state = State::Boot;
 static bool           g_wait_release_after_auto_send = false;
+static uint32_t       g_last_mic_log_ms = 0;
+
+static void clearSideStatus() {
+    const int dx = (M5.Display.width() - PekekoFace::kSize) / 2;
+    if (dx <= 0) return;
+    M5.Display.fillRect(0, 0, dx, M5.Display.height(), X68_BG);
+    M5.Display.fillRect(dx + PekekoFace::kSize, 0,
+                        M5.Display.width() - dx - PekekoFace::kSize,
+                        M5.Display.height(), X68_BG);
+}
 
 static void setState(State s, int face_id = -1) {
     g_state = s;
     if (face_id > 0) g_face.show(face_id);
+    clearSideStatus();
+}
+
+static void drawMicLevel(uint16_t peak, uint16_t rms) {
+    const int dx = (M5.Display.width() - PekekoFace::kSize) / 2;
+    if (dx < 28) return;
+
+    constexpr int x = 8;
+    constexpr int y = 24;
+    constexpr int w = 18;
+    constexpr int h = 188;
+    constexpr uint16_t frame = 0x7BEF;
+    constexpr uint16_t peak_color = 0xFBE0;
+    constexpr uint16_t rms_color = 0x07E0;
+
+    const int rms_h = (int)((uint32_t)rms * h / 12000);
+    const int peak_h = (int)((uint32_t)peak * h / 18000);
+    const int rh = rms_h > h ? h : rms_h;
+    const int ph = peak_h > h ? h : peak_h;
+
+    M5.Display.fillRect(x - 2, y - 2, w + 4, h + 4, X68_BG);
+    M5.Display.drawRect(x, y, w, h, frame);
+    if (ph > 0) M5.Display.fillRect(x + 2, y + h - ph, w - 4, ph, peak_color);
+    if (rh > 0) M5.Display.fillRect(x + 5, y + h - rh, w - 10, rh, rms_color);
+
+    const uint32_t now = millis();
+    if (now - g_last_mic_log_ms >= 500) {
+        g_last_mic_log_ms = now;
+        Serial.printf("[MIC ] peak=%u rms=%u\n", (unsigned)peak, (unsigned)rms);
+    }
+}
+
+static void showReadyError(const ReadyResponse& ready) {
+    setState(State::Error, faces::FACE_ERR_SERVER);
+    M5.Display.fillScreen(X68_BG);
+    M5.Display.setTextColor(0xF800, X68_BG);
+    M5.Display.setTextSize(1);
+    M5.Display.setCursor(12, 70);
+    M5.Display.println("SERVER NOT READY");
+    M5.Display.setTextColor(0xFFFF, X68_BG);
+    M5.Display.setCursor(12, 96);
+    M5.Display.printf("HTTP: %d\n", ready.http_status);
+    M5.Display.setCursor(12, 116);
+    M5.Display.println("Check /ready, Ollama, STT, TTS");
+    Serial.printf("[ERR ] /ready failed: HTTP %d\n", ready.http_status);
+    if (ready.body.length() > 0) {
+        Serial.printf("[READY] %s\n", ready.body.c_str());
+    }
+    playServerErrorBeep();
 }
 
 static bool connectWiFi() {
@@ -173,6 +232,12 @@ void setup() {
         g_face.show(faces::FACE_ERR_WIFI);
         return;
     }
+    ReadyResponse ready = ChatClient::ready();
+    if (!ready.ok) {
+        showReadyError(ready);
+        return;
+    }
+    Serial.printf("[READY] server ok: %s\n", ready.body.c_str());
 
     // 短いウェーブの後、Idle 表情へ
     delay(700);
@@ -197,6 +262,7 @@ void loop() {
 
         case State::Listening: {
             g_rec.poll();
+            drawMicLevel(g_rec.lastPeak(), g_rec.lastRms());
             const bool rec_overflow = g_rec.isFull();
             if (!pressed || rec_overflow) {
                 if (rec_overflow) {

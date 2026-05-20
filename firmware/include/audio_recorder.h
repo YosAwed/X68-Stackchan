@@ -6,6 +6,7 @@
 #include <M5Unified.h>
 #include <cstdint>
 #include <cstring>
+#include <cmath>
 
 #include "config.h"
 
@@ -32,6 +33,8 @@ public:
         write_pos_ = 44;
         recording_ = true;
         overflow_stopped_ = false;
+        last_peak_ = 0;
+        last_rms_ = 0;
         auto cfg = M5.Mic.config();
         cfg.sample_rate = MIC_SAMPLE_RATE;
         M5.Mic.config(cfg);
@@ -53,6 +56,7 @@ public:
                 stop();
                 return;
             }
+            updateLevel(chunk_, last_bytes_ / sizeof(int16_t));
             std::memcpy(buf_ + write_pos_, chunk_, last_bytes_);
             write_pos_ += last_bytes_;
             last_bytes_ = 0;
@@ -83,8 +87,28 @@ public:
     size_t         size() const { return write_pos_; }
     bool isRecording() const    { return recording_; }
     bool isFull() const         { return overflow_stopped_; }
+    uint16_t lastPeak() const   { return last_peak_; }
+    uint16_t lastRms() const    { return last_rms_; }
 
 private:
+    void updateLevel(const int16_t* samples, size_t count) {
+        if (!samples || count == 0) {
+            last_peak_ = 0;
+            last_rms_ = 0;
+            return;
+        }
+        int32_t peak = 0;
+        int64_t sumsq = 0;
+        for (size_t i = 0; i < count; ++i) {
+            const int32_t v = samples[i];
+            const int32_t a = v < 0 ? -v : v;
+            if (a > peak) peak = a;
+            sumsq += v * v;
+        }
+        last_peak_ = static_cast<uint16_t>(peak > 32767 ? 32767 : peak);
+        last_rms_ = static_cast<uint16_t>(std::sqrt((double)sumsq / count));
+    }
+
     void writeWavHeader() {
         const uint32_t data_bytes = static_cast<uint32_t>(write_pos_) - 44u;
         const uint32_t riff_size  = data_bytes + 36u;
@@ -119,6 +143,8 @@ private:
     bool     overflow_stopped_ = false;
     int16_t  chunk_[512]       = {};
     size_t   last_bytes_       = 0;
+    uint16_t last_peak_        = 0;
+    uint16_t last_rms_         = 0;
 };
 
 } // namespace stackchan
