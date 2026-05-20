@@ -31,6 +31,7 @@ public:
     void start() {
         write_pos_ = 44;
         recording_ = true;
+        overflow_stopped_ = false;
         auto cfg = M5.Mic.config();
         cfg.sample_rate = MIC_SAMPLE_RATE;
         M5.Mic.config(cfg);
@@ -48,6 +49,7 @@ public:
         // 直前 record() で埋まったぶんを確定 (初回は last_bytes_ == 0)
         if (last_bytes_ > 0) {
             if (write_pos_ + last_bytes_ > cap_) {
+                overflow_stopped_ = true;
                 stop();
                 return;
             }
@@ -80,6 +82,7 @@ public:
     const uint8_t* data() const { return buf_; }
     size_t         size() const { return write_pos_; }
     bool isRecording() const    { return recording_; }
+    bool isFull() const         { return overflow_stopped_; }
 
 private:
     void writeWavHeader() {
@@ -109,12 +112,13 @@ private:
         std::memcpy(h + 40, &data_bytes, 4);
     }
 
-    uint8_t* buf_         = nullptr;
-    size_t   cap_         = 0;
-    size_t   write_pos_   = 44; // 先頭 44byte はヘッダ予約
-    bool     recording_   = false;
-    int16_t  chunk_[512]  = {};
-    size_t   last_bytes_  = 0;
+    uint8_t* buf_              = nullptr;
+    size_t   cap_              = 0;
+    size_t   write_pos_        = 44; // 先頭 44byte はヘッダ予約
+    bool     recording_        = false;
+    bool     overflow_stopped_ = false;
+    int16_t  chunk_[512]       = {};
+    size_t   last_bytes_       = 0;
 };
 
 } // namespace stackchan

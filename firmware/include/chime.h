@@ -58,4 +58,33 @@ inline void playErrorBeep() {
     detail::playSequence(kErr, 2, /*vol=*/140);
 }
 
+// 録音上限到達時。短い二連音で自動送信を知らせる。
+inline void playOverflowBeep() {
+    static const detail::Note kOverflow[] = {
+        { 880.0f, 60 },    // A5
+        { 880.0f, 60 },    // A5
+    };
+    detail::playSequence(kOverflow, 2, /*vol=*/130);
+}
+
+// 413 Payload Too Large: 録音が長すぎたことを下降音で知らせる。
+inline void playTooLargeBeep() {
+    static const detail::Note kTooLarge[] = {
+        { 523.3f, 80 },    // C5
+        { 440.0f, 80 },    // A4
+        { 349.2f, 160 },   // F4
+    };
+    detail::playSequence(kTooLarge, 3, /*vol=*/140);
+}
+
+// 5xx Server Error: サーバ側の失敗を少し不規則な音で知らせる。
+inline void playServerErrorBeep() {
+    static const detail::Note kServer[] = {
+        { 261.6f, 60 },    // C4
+        { 392.0f, 60 },    // G4
+        { 261.6f, 120 },   // C4
+    };
+    detail::playSequence(kServer, 3, /*vol=*/140);
+}
+
 } // namespace stackchan

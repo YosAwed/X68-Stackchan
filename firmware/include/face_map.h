@@ -70,6 +70,10 @@ inline constexpr int FACE_SPEAK_OPEN    = F_DETERMINED;  // 口開け (目は維
 inline constexpr int FACE_ERR_WIFI      = F_FLUSTERED;
 inline constexpr int FACE_ERR_HTTP      = F_PANIC;
 inline constexpr int FACE_ERR_GENERIC   = F_SHOCKED;
+inline constexpr int FACE_ERR_TOO_LARGE = F_EMBARRASSED; // 413: 録音が長すぎた
+inline constexpr int FACE_ERR_SERVER    = F_DIZZY;       // 5xx: サーバ内部エラー
+inline constexpr int FACE_ERR_TIMEOUT   = F_BORED;       // 接続失敗/タイムアウト
+inline constexpr int FACE_REC_OVERFLOW  = F_SURPRISED;   // 録音上限到達
 
 } // namespace faces
 } // namespace stackchan
