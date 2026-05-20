@@ -36,4 +36,11 @@ static constexpr int SERVO_YAW_PIN   = 1; // 仮
 static constexpr int SERVO_PITCH_PIN = 2; // 仮
 
 // ---- HTTP タイムアウト --------------------------------------
-static constexpr uint32_t HTTP_TIMEOUT_MS = 30000;
+// サーバ偵活時間 = STT + LLM + TTS の合計。
+// 目安: MAX_REC_SECONDS 秒の録音に対して以下の計算式を参考にする。
+//   HTTP_TIMEOUT_MS = MAX_REC_SECONDS * 1000   // STT (内容に比例)
+//                  + 30000                     // LLM 推論 (最大 30s)
+//                  + 15000                     // TTS 合成 (最大 15s)
+// 例: MAX_REC_SECONDS=10 なら 10000+30000+15000 = 55000ms が安全側。
+// GPU 環境やモデルサイズに応じて調整すること。
+static constexpr uint32_t HTTP_TIMEOUT_MS = 55000;

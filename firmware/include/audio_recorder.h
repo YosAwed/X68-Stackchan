@@ -31,6 +31,7 @@ public:
     void start() {
         write_pos_ = 44;
         recording_ = true;
+        overflow_stopped_ = false;
         auto cfg = M5.Mic.config();
         cfg.sample_rate = MIC_SAMPLE_RATE;
         M5.Mic.config(cfg);
@@ -48,6 +49,9 @@ public:
         // 直前 record() で埋まったぶんを確定 (初回は last_bytes_ == 0)
         if (last_bytes_ > 0) {
             if (write_pos_ + last_bytes_ > cap_) {
+                // バッファ上限到達: 上限フラグを立てて停止
+                // 呼び出し元 (main.cpp) は isFull() で検知して状態遷移する
+                overflow_stopped_ = true;
                 stop();
                 return;
             }
@@ -81,6 +85,11 @@ public:
     size_t         size() const { return write_pos_; }
     bool isRecording() const    { return recording_; }
 
+    // MAX_REC_SECONDS に達して自動停止したかどうかを返す。
+    // main.cpp の loop() でボタン離し判定と並列にチェックし、
+    // 上限到達時も確実に Thinking 状態へ遷移させるために使う。
+    bool isFull() const { return overflow_stopped_; }
+
 private:
     void writeWavHeader() {
         const uint32_t data_bytes = static_cast<uint32_t>(write_pos_) - 44u;
@@ -109,12 +118,13 @@ private:
         std::memcpy(h + 40, &data_bytes, 4);
     }
 
-    uint8_t* buf_         = nullptr;
-    size_t   cap_         = 0;
-    size_t   write_pos_   = 44; // 先頭 44byte はヘッダ予約
-    bool     recording_   = false;
-    int16_t  chunk_[512]  = {};
-    size_t   last_bytes_  = 0;
+    uint8_t* buf_              = nullptr;
+    size_t   cap_              = 0;
+    size_t   write_pos_        = 44; // 先頭 44byte はヘッダ予約
+    bool     recording_        = false;
+    bool     overflow_stopped_ = false; // バッファ上限到達フラグ
+    int16_t  chunk_[512]       = {};
+    size_t   last_bytes_       = 0;
 };
 
 } // namespace stackchan

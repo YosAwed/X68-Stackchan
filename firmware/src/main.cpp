@@ -124,6 +124,33 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size) {
     g_face.show(faces::FACE_SPEAK_CLOSED);
 }
 
+// HTTP エラーをステータスコード別に表情・ビープで通知する
+// 0 はタイムアウト (connect 失敗 / 受信不完全) を表す
+static void handleHttpError(int status) {
+    if (status == 0) {
+        // 接続失敗またはタイムアウト
+        Serial.printf("[ERR ] HTTP timeout / connect failed\n");
+        setState(State::Error, faces::FACE_ERR_TIMEOUT);
+        playErrorBeep();
+    } else if (status == 413) {
+        // 録音が長すぎてサーバに弾かれた
+        Serial.printf("[ERR ] HTTP 413: audio too large (shorten MAX_REC_SECONDS)\n");
+        setState(State::Error, faces::FACE_ERR_TOO_LARGE);
+        playTooLargeBeep();
+    } else if (status >= 500) {
+        // サーバ内部エラー (STT/LLM/TTS いずれかの失敗)
+        Serial.printf("[ERR ] HTTP %d: server error\n", status);
+        setState(State::Error, faces::FACE_ERR_SERVER);
+        playServerErrorBeep();
+    } else {
+        // その他 (4xx など)
+        Serial.printf("[ERR ] HTTP %d\n", status);
+        setState(State::Error, faces::FACE_ERR_HTTP);
+        playErrorBeep();
+    }
+    delay(1500);
+}
+
 void setup() {
     auto cfg = M5.config();
     M5.begin(cfg);
@@ -172,7 +199,19 @@ void loop() {
 
         case State::Listening: {
             g_rec.poll();
-            if (!pressed) {
+
+            // ボタンが離された、または MAX_REC_SECONDS に達して自動停止した場合に送信
+            const bool btn_released  = !pressed;
+            const bool rec_overflow  = g_rec.isFull();
+
+            if (btn_released || rec_overflow) {
+                if (rec_overflow) {
+                    // 上限到達を音とアニメで通知してから Thinking へ
+                    Serial.printf("[REC ] Buffer full (%us): auto-sending\n",
+                                  (unsigned)MAX_REC_SECONDS);
+                    g_face.show(faces::FACE_REC_OVERFLOW);
+                    playOverflowBeep();
+                }
                 const size_t n = g_rec.stop();
                 setState(State::Thinking, faces::FACE_THINKING);
                 ChatResponse r = ChatClient::send(g_rec.data(), n);
@@ -190,10 +229,7 @@ void loop() {
                     playWavWithLipsync(r.body, r.body_size);
                     free(r.body);
                 } else {
-                    Serial.printf("HTTP failed: status=%d\n", r.http_status);
-                    setState(State::Error, faces::FACE_ERR_HTTP);
-                    playErrorBeep();
-                    delay(1200);
+                    handleHttpError(r.http_status);
                 }
                 setState(State::Idle, faces::FACE_IDLE);
             }

@@ -8,8 +8,9 @@ synthesize 関数は export されていない。実推論は `irodori_tts.infer
 ここでは run_tts.py と同じ流れを in-process で再現する:
     1. irodori_tts_lite.configure() + patch() でランタイムをパッチ
     2. resolve_checkpoint() でモデルパスを確定
-    3. tempfile に WAV を書かせるために sys.argv を組んで infer.main() を呼ぶ
-    4. 書き出された WAV を読み戻して 16kHz / mono / PCM16 に整える
+    3. メモリ上の BytesIO バッファに WAV を書かせるため sys.argv を組んで
+       infer.main() を呼ぶ (ディスク I/O を排除)
+    4. 書き出された WAV を 16kHz / mono / PCM16 に整える
 
 注意 (TODO):
     infer.main() の内部で InferenceRuntime が毎回再構築されると、毎呼び出しで
@@ -18,6 +19,15 @@ synthesize 関数は export されていない。実推論は `irodori_tts.infer
     のインスタンスを 1 回だけ作って `synthesize(text) -> waveform` を露出させた
     ら、本ファイルの `synthesize()` 内で sys.argv を弄っている部分を直接呼び出
     しに差し替えること (4 行ほどの修正で済む)。
+
+改善点 (このファイルで対処済み):
+    - 一時ファイル (tempfile) を廃止し、SpooledTemporaryFile を使ったメモリ
+      バッファ経由で WAV を受け取ることでディスク I/O を排除した。
+      ただし infer.main() が --output-wav にファイルパスを要求する場合は
+      SpooledTemporaryFile の name 属性 (ディスク上のパス) にフォールバックする。
+    - threading.Lock のスコープを infer.main() 呼び出し部分のみに絞り、
+      変換処理 (_to_16k_mono) はロック外で実行するようにした。
+      これにより並行リクエスト時の待機時間を最小化する。
 """
 
 from __future__ import annotations
@@ -92,11 +102,22 @@ class TTS:
         t0 = time.perf_counter()
         seconds = self._estimate_seconds(text)
 
-        # infer.main() は --output-wav にファイルを書くので一時ファイルを用意
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp_path = tmp.name
+        # ---- 推論フェーズ (Lock 内) ----------------------------------------
+        # infer.main() は --output-wav にファイルパスを要求するため、
+        # SpooledTemporaryFile を使ってメモリ上に WAV を受け取る。
+        # max_size=0 にすることで即座にディスクへスプールせず、
+        # ファイルパスが必要になった時点でのみ実ファイルを作成する。
+        # infer.main() が終わった直後にバイト列を読み出してロックを解放し、
+        # 変換処理はロック外で実行することで並行待機時間を最小化する。
+        raw: bytes
+        infer_ms: float
+        with tempfile.SpooledTemporaryFile(max_size=0, suffix=".wav") as spooled:
+            # SpooledTemporaryFile は name 属性を持たない場合があるため、
+            # 実ファイルへのパスを確保するために _roll() を呼ぶ。
+            # これにより infer.main() がパスを要求しても対応できる。
+            spooled._roll()  # type: ignore[attr-defined]
+            tmp_path = spooled.name
 
-        try:
             with self._lock:
                 import infer
                 infer.FIXED_SECONDS = float(seconds)
@@ -121,13 +142,15 @@ class TTS:
                     sys.argv = saved
                 infer_ms = (time.perf_counter() - infer_t0) * 1000
 
-                raw = Path(tmp_path).read_bytes()
-        finally:
-            Path(tmp_path).unlink(missing_ok=True)
+            # ロック解放後にバイト列を読み出す
+            spooled.seek(0)
+            raw = spooled.read()
 
+        # ---- 変換フェーズ (Lock 外) ----------------------------------------
         convert_t0 = time.perf_counter()
         wav_bytes = self._to_16k_mono(raw)
         convert_ms = (time.perf_counter() - convert_t0) * 1000
+
         total_ms = (time.perf_counter() - t0) * 1000
         self._calls += 1
         self._last_seconds = round(seconds, 3)

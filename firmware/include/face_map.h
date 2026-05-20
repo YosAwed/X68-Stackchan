@@ -68,8 +68,14 @@ inline constexpr int FACE_SPEAK_CLOSED  = F_SMILE;       // 口閉じ
 inline constexpr int FACE_SPEAK_OPEN    = F_DETERMINED;  // 口開け (目は維持)
 // エラー系
 inline constexpr int FACE_ERR_WIFI      = F_FLUSTERED;
-inline constexpr int FACE_ERR_HTTP      = F_PANIC;
+inline constexpr int FACE_ERR_HTTP      = F_PANIC;      // 汎用 HTTP エラー
 inline constexpr int FACE_ERR_GENERIC   = F_SHOCKED;
+// HTTP エラー詳細 (ステータスコード別)
+inline constexpr int FACE_ERR_TOO_LARGE = F_EMBARRASSED; // 413: 録音が長すぎた
+inline constexpr int FACE_ERR_SERVER    = F_DIZZY;       // 5xx: サーバ内部エラー
+inline constexpr int FACE_ERR_TIMEOUT   = F_BORED;       // タイムアウト
+// 録音上限到達 (MAX_REC_SECONDS 超過)
+inline constexpr int FACE_REC_OVERFLOW  = F_SURPRISED;   // 自動送信トリガー時
 
 } // namespace faces
 } // namespace stackchan
