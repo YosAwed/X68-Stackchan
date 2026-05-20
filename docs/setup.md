@@ -136,6 +136,8 @@ source ~/.bashrc
 pio --version   # 6.x 以上であること
 ```
 
+Windows ネイティブの PlatformIO でビルドする場合、ESP32 toolchain が日本語や空白を含むパスで失敗することがある。その場合は `C:\pio-build` など ASCII だけの作業ディレクトリにリポジトリを置くか、WSL2 側でビルドする。
+
 ```bash
 cd firmware
 cp include/config.h.example include/config.h

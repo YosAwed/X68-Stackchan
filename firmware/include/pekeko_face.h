@@ -51,7 +51,13 @@ public:
         std::snprintf(path, sizeof(path), "/face_%02d.jpg", n);
         const int dx = (M5.Display.width()  - kSize) / 2;
         const int dy = (M5.Display.height() - kSize) / 2;
-        M5.Display.drawJpgFile(LittleFS, path, dx, dy);
+        fs::File file = LittleFS.open(path, "r");
+        if (!file) {
+            log_e("%s not found", path);
+            return;
+        }
+        M5.Display.drawJpg(&file, dx, dy);
+        file.close();
     }
 
     int current() const { return current_; }
