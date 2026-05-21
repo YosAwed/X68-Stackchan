@@ -27,6 +27,16 @@ struct ReadyResponse {
     String body;
 };
 
+// GET /pull の応答 (定期発話 / 外部 push の受け取り)
+struct PullResponse {
+    bool      ok          = false;       // body が読めたか
+    int       http_status = 0;           // 204 = 空キュー、200 = 発話あり
+    uint8_t*  body        = nullptr;     // ps_malloc 済み (呼び出し側 free)
+    size_t    body_size   = 0;
+    String    bot_text;
+    String    source;                    // "sched:morning_greet" / "ext:..." など
+};
+
 class ChatClient {
 public:
     static ReadyResponse ready() {
@@ -158,6 +168,81 @@ public:
         r.body = static_cast<uint8_t*>(ps_malloc(resp_len));
         if (!r.body) {
             log_e("ps_malloc(%u) failed for response", (unsigned)resp_len);
+            client.stop();
+            return r;
+        }
+        size_t got = 0;
+        const uint32_t deadline = millis() + HTTP_TIMEOUT_MS;
+        while (got < resp_len && millis() < deadline) {
+            int n = client.read(r.body + got, resp_len - got);
+            if (n > 0) got += n;
+            else delay(1);
+        }
+        r.body_size = got;
+        r.ok = (got == resp_len);
+        if (!r.ok) {
+            free(r.body);
+            r.body = nullptr;
+            r.body_size = 0;
+        }
+        client.stop();
+        return r;
+    }
+
+    // 定期発話 / 外部 push を取りに行く (GET /pull)。
+    // wait_seconds=0 なら即時応答 (空なら 204)。> 0 で server 側 long-poll。
+    // CoreS3 側は待機ループ中に呼ぶので、wait_seconds=0 の短ポーリングが基本。
+    static PullResponse pull(uint32_t wait_seconds = 0) {
+        PullResponse r;
+
+        WiFiClient client;
+        if (!client.connect(SERVER_HOST, SERVER_PORT)) {
+            return r;
+        }
+        client.setTimeout((wait_seconds + 5) * 1000);
+
+        client.printf("GET /pull?wait=%u HTTP/1.1\r\n", (unsigned)wait_seconds);
+        client.printf("Host: %s:%u\r\n", SERVER_HOST, (unsigned)SERVER_PORT);
+        client.print("Accept: audio/wav\r\n");
+        client.print("Connection: close\r\n\r\n");
+
+        String status = client.readStringUntil('\n');
+        int sp1 = status.indexOf(' ');
+        int sp2 = status.indexOf(' ', sp1 + 1);
+        if (sp1 > 0 && sp2 > sp1) {
+            r.http_status = status.substring(sp1 + 1, sp2).toInt();
+        }
+
+        size_t resp_len = 0;
+        while (client.connected() || client.available()) {
+            String line = client.readStringUntil('\n');
+            if (line == "\r" || line.length() == 0) break;
+            line.trim();
+            const int colon = line.indexOf(':');
+            if (colon <= 0) continue;
+
+            String name = line.substring(0, colon);
+            String value = line.substring(colon + 1);
+            name.toLowerCase();
+            value.trim();
+
+            if (name == "content-length") {
+                resp_len = (size_t)value.toInt();
+            } else if (name == "x-stackchan-bot-text") {
+                r.bot_text = urlDecode(value);
+            } else if (name == "x-stackchan-source") {
+                r.source = value;
+            }
+        }
+
+        if (r.http_status == 204 || r.http_status != 200 || resp_len == 0) {
+            client.stop();
+            return r;
+        }
+
+        r.body = static_cast<uint8_t*>(ps_malloc(resp_len));
+        if (!r.body) {
+            log_e("ps_malloc(%u) failed for pull response", (unsigned)resp_len);
             client.stop();
             return r;
         }

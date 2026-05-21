@@ -22,5 +22,8 @@ httpx==0.27.2
 torchaudio>=2.1
 numpy>=1.26
 
+# 定期発話スケジューラ (cron 式の評価)
+croniter>=2.0
+
 # 開発支援
 python-dotenv==1.0.1

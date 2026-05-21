@@ -29,6 +29,10 @@ static AudioRecorder  g_rec;
 static State          g_state = State::Boot;
 static bool           g_wait_release_after_auto_send = false;
 static uint32_t       g_last_mic_log_ms = 0;
+static uint32_t       g_last_pull_ms    = 0;
+
+// 定期発話 / 外部 push をサーバから取りに行く間隔 (Idle 中のみ)
+constexpr uint32_t PULL_INTERVAL_MS = 30000;
 
 #if SERVO_ENABLED
 static ServoController g_servo;
@@ -284,6 +288,21 @@ void loop() {
             if (pressed && !g_wait_release_after_auto_send) {
                 g_rec.start();
                 setState(State::Listening, faces::FACE_LISTENING);
+                break;
+            }
+            // 待機中: スケジュール発話 / 外部 push を取りにいく (wait=0 即時応答)
+            if (millis() - g_last_pull_ms >= PULL_INTERVAL_MS) {
+                g_last_pull_ms = millis();
+                PullResponse pr = ChatClient::pull(0);
+                if (pr.ok && pr.body && pr.body_size > 0) {
+                    Serial.printf("[PUSH] %s (source=%s)\n",
+                                  pr.bot_text.c_str(), pr.source.c_str());
+                    setState(State::Speaking);     // 顔/サーボのみ。lipsync が表情を上書き
+                    playAckBeep();
+                    playWavWithLipsync(pr.body, pr.body_size);
+                    free(pr.body);
+                    setState(State::Idle, faces::FACE_IDLE);
+                }
             }
             break;
 

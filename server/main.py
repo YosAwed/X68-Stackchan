@@ -20,9 +20,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
+from contextlib import asynccontextmanager
+from pathlib import Path
 from urllib.parse import quote
 
 from dotenv import load_dotenv
@@ -32,6 +35,8 @@ from fastapi.responses import Response, JSONResponse
 from stt import STT
 from llm import LLM
 from tts import TTS
+from utterance_queue import UtteranceQueue, Utterance
+from scheduler import Scheduler
 
 load_dotenv()
 
@@ -58,7 +63,25 @@ llm = LLM(
 )
 tts = TTS()  # backend / env 解釈は tts.py + tts_<backend>.py に委譲
 
-app = FastAPI(title="Stack-chan server", version="0.1.0")
+queue = UtteranceQueue(max_size=int(os.getenv("QUEUE_MAX_SIZE", "16")))
+_scheduler: Scheduler | None = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _scheduler
+    if os.getenv("SCHEDULE_ENABLED", "0") == "1":
+        path = Path(os.getenv("SCHEDULE_FILE", "schedule.json"))
+        _scheduler = Scheduler.from_file(path, llm, tts, queue)
+        await _scheduler.start()
+    else:
+        log.info("scheduler disabled (set SCHEDULE_ENABLED=1 to enable)")
+    yield
+    if _scheduler is not None:
+        await _scheduler.stop()
+
+
+app = FastAPI(title="Stack-chan server", version="0.1.0", lifespan=lifespan)
 MAX_AUDIO_BYTES = int(os.getenv("MAX_AUDIO_BYTES", str(2 * 1024 * 1024)))
 
 
@@ -207,3 +230,61 @@ def chat_text(text: str = Form(...), sid: str = Form("default")):
 def reset(sid: str = Form("default")):
     llm.reset(sid)
     return {"ok": True}
+
+
+# ---- 定期発話 / 外部 push --------------------------------------------------
+
+@app.get("/pull")
+async def pull(wait: float = 0.0):
+    """CoreS3 から呼ぶ long-poll。`wait` 秒 (0..60) 待ってキューから 1 件返す。
+
+    キュー空のままタイムアウトしたら 204 No Content。
+    成功時は `X-Stackchan-Bot-Text` / `X-Stackchan-Source` ヘッダ付きの WAV。
+    """
+    wait = max(0.0, min(wait, 60.0))
+    u = await queue.pull(wait)
+    if u is None:
+        return Response(status_code=204)
+    return Response(
+        content=u.wav,
+        media_type="audio/wav",
+        headers={
+            "X-Stackchan-Bot-Text":     quote(u.bot_text),
+            "X-Stackchan-Source":       u.source,
+            "X-Stackchan-TTS-Backend":  os.getenv("TTS_BACKEND", "irodori"),
+        },
+    )
+
+
+@app.post("/enqueue")
+async def enqueue(
+    text: str = Form(...),
+    via_llm: bool = Form(False),
+    sid: str = Form("external"),
+):
+    """外部 (Discord bot / curl など) から発話を積む。
+
+    via_llm=true で `text` をプロンプトとして LLM を通してから TTS、
+    false なら `text` をそのまま TTS する。
+    """
+    text = text.strip()
+    if not text:
+        raise HTTPException(400, "text is empty")
+    if via_llm:
+        bot_text = await asyncio.to_thread(llm.chat, sid, text)
+    else:
+        bot_text = text
+    if not bot_text:
+        raise HTTPException(500, "empty bot_text after LLM")
+    wav = await asyncio.to_thread(tts.synthesize, bot_text)
+    ok = queue.push_nowait(Utterance(wav=wav, bot_text=bot_text, source=f"ext:{sid}"))
+    if not ok:
+        raise HTTPException(503, "utterance queue full")
+    return {"ok": True, "bot_text": bot_text, "queue_size": queue.size()}
+
+
+@app.get("/scheduler/status")
+def scheduler_status():
+    if _scheduler is None:
+        return {"enabled": False}
+    return {"enabled": True, **_scheduler.status()}
