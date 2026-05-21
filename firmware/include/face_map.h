@@ -53,8 +53,12 @@ inline constexpr int F_WAVE              = 36;  // 36 バイバイ / 挨拶
 inline constexpr int FACE_BOOT_DONE     = F_WAVE;
 // 通常待機
 inline constexpr int FACE_IDLE          = F_NEUTRAL;
-// 長時間放置 (未使用、将来用)
-inline constexpr int FACE_IDLE_LONG     = F_SLEEPING;
+// アイドル段階化 (power.h の IdleStage と対応)
+inline constexpr int FACE_IDLE_BORED    = F_BORED;        // 3 分: 退屈
+inline constexpr int FACE_IDLE_YAWN     = F_YAWN_SMALL;   // 4 分: あくび
+inline constexpr int FACE_IDLE_LONG     = F_SLEEPING;     // 5 分: deep sleep 直前 (Zzz)
+// 瞬きアニメで Idle 顔から一瞬切り替える
+inline constexpr int FACE_IDLE_BLINK    = F_LAUGH_EYES_CLOSED;
 // 録音中
 inline constexpr int FACE_LISTENING     = F_QUESTION;
 // サーバ問い合わせ中
