@@ -67,9 +67,32 @@ queue = UtteranceQueue(max_size=int(os.getenv("QUEUE_MAX_SIZE", "16")))
 _scheduler: Scheduler | None = None
 
 
+async def _prewarm_tts():
+    """起動直後にダミー合成を 1 回走らせて初回ペナルティを潰す。
+
+    Irodori 経路は infer.main() が最初に呼ばれた時点でモデルロードや
+    Triton カーネルの JIT コンパイルが走るため、最初の /chat だけが
+    数秒遅くなる。本番リクエストの前に 1 度合成しておくと体感が改善する。
+    失敗しても起動は止めない (TTS_BACKEND の設定ミスなどはユーザーに任せる)。
+    """
+    try:
+        text = os.getenv("TTS_PREWARM_TEXT", "あ")
+        log.info("TTS pre-warm: synthesizing %r ...", text)
+        t0 = time.perf_counter()
+        await asyncio.to_thread(tts.synthesize, text)
+        log.info("TTS pre-warm done in %.0f ms", (time.perf_counter() - t0) * 1000)
+    except Exception:
+        log.exception("TTS pre-warm failed (continuing without warm cache)")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _scheduler
+    # 起動時に TTS を一度叩いて初回ペナルティを消す。
+    # TTS_PREWARM=0 で無効化可能 (CI など TTS が動かない環境用)。
+    if os.getenv("TTS_PREWARM", "1") == "1":
+        # 別タスクで走らせて lifespan の yield を待たせない (起動を遅らせない)。
+        asyncio.create_task(_prewarm_tts())
     if os.getenv("SCHEDULE_ENABLED", "0") == "1":
         path = Path(os.getenv("SCHEDULE_FILE", "schedule.json"))
         _scheduler = Scheduler.from_file(path, llm, tts, queue)
@@ -288,3 +311,93 @@ def scheduler_status():
     if _scheduler is None:
         return {"enabled": False}
     return {"enabled": True, **_scheduler.status()}
+
+
+# ---- 簡易管理画面 -----------------------------------------------------------
+# /admin を開くと /ready /scheduler/status をブラウザから見れる。
+# /enqueue を叩くフォームつき。認証なしのローカル運用専用なので、
+# uvicorn を 0.0.0.0 で外に出している場合は逆プロキシ + Basic 認証推奨。
+ADMIN_HTML = """<!doctype html>
+<html lang="ja"><head>
+<meta charset="utf-8"><title>Stack-chan admin</title>
+<style>
+ body{font-family:system-ui,-apple-system,sans-serif;max-width:780px;margin:24px auto;padding:0 16px;line-height:1.55}
+ h1{font-size:1.3em;border-bottom:1px solid #ccc;padding-bottom:6px}
+ h2{font-size:1.05em;margin-top:1.8em}
+ code,pre{background:#f4f4f4;padding:2px 6px;border-radius:4px;font-family:'SFMono-Regular',Consolas,monospace}
+ pre{padding:10px;overflow-x:auto}
+ table{border-collapse:collapse;width:100%;margin:8px 0}
+ th,td{border:1px solid #ddd;padding:6px 8px;font-size:0.9em;text-align:left}
+ th{background:#f8f8f8}
+ .err{color:#a00}
+ .ok{color:#070}
+ button{padding:6px 14px;cursor:pointer}
+ input[type=text]{padding:6px 8px;width:60%}
+ label{display:inline-block;margin-right:14px}
+</style></head><body>
+<h1>Stack-chan admin</h1>
+<p>ローカル運用専用ページ。 <code>0.0.0.0</code> 公開時は逆プロキシで保護してください。</p>
+
+<h2>サブシステム状態 (<code>/ready</code>)</h2>
+<pre id="ready">loading...</pre>
+
+<h2>スケジューラ (<code>/scheduler/status</code>)</h2>
+<div id="sched">loading...</div>
+
+<h2>テスト発話 push (<code>/enqueue</code>)</h2>
+<form id="f">
+  <input type="text" name="text" placeholder="読み上げるテキスト" required>
+  <label><input type="checkbox" name="via_llm"> LLM 経由</label>
+  <button type="submit">送信</button>
+</form>
+<pre id="enq"></pre>
+
+<script>
+async function loadReady(){
+  try{
+    const r = await fetch('/ready'); const j = await r.json();
+    document.getElementById('ready').textContent = JSON.stringify(j, null, 2);
+  }catch(e){
+    document.getElementById('ready').innerHTML = '<span class="err">/ready 取得失敗: '+e+'</span>';
+  }
+}
+async function loadSched(){
+  try{
+    const r = await fetch('/scheduler/status'); const j = await r.json();
+    if(!j.enabled){ document.getElementById('sched').innerHTML =
+       '<i>スケジューラ無効 (SCHEDULE_ENABLED=0)。 /enqueue は使えます。</i>'; return; }
+    let html = '<p>running: <b>'+(j.running?'<span class="ok">yes</span>':'<span class="err">no</span>')+
+               '</b> &nbsp; queue_size: <b>'+j.queue_size+'</b></p>';
+    html += '<table><tr><th>name</th><th>cron</th><th>kind</th><th>next</th><th>fired</th><th>last</th><th>error</th></tr>';
+    for(const t of j.triggers){
+      html += '<tr><td>'+t.name+'</td><td><code>'+t.cron+'</code></td><td>'+t.kind+
+              '</td><td>'+t.next+'</td><td>'+t.fire_count+'</td><td>'+(t.last_fire||'-')+
+              '</td><td>'+(t.last_error?'<span class="err">'+t.last_error+'</span>':'-')+'</td></tr>';
+    }
+    html += '</table>';
+    document.getElementById('sched').innerHTML = html;
+  }catch(e){
+    document.getElementById('sched').innerHTML = '<span class="err">取得失敗: '+e+'</span>';
+  }
+}
+document.getElementById('f').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const fd = new FormData(ev.target);
+  // checkbox は付いていないと送信されないので明示
+  if(!fd.has('via_llm')) fd.set('via_llm','false'); else fd.set('via_llm','true');
+  fd.set('sid','admin');
+  const r = await fetch('/enqueue',{method:'POST',body:fd});
+  const j = await r.json().catch(()=>({error:'parse failed', status:r.status}));
+  document.getElementById('enq').textContent = JSON.stringify(j, null, 2);
+  loadSched();
+});
+loadReady(); loadSched();
+setInterval(()=>{loadReady(); loadSched();}, 5000);
+</script>
+</body></html>
+"""
+
+
+@app.get("/admin", response_class=Response)
+def admin_page():
+    return Response(content=ADMIN_HTML, media_type="text/html; charset=utf-8")
