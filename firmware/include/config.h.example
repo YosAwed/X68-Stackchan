@@ -10,11 +10,17 @@
 static constexpr const char* WIFI_SSID = "your-ssid";
 static constexpr const char* WIFI_PASS = "your-password";
 
-// ---- 母艦 (Mac mini) ---------------------------------------
-// FastAPI サーバの IP とポート
+// ---- 母艦 (FastAPI サーバ) ---------------------------------
+// 母艦 PC / Mac の **LAN IP** を入れる。
+//   ※ `localhost` / `127.0.0.1` は CoreS3 から見ると自分自身を指してしまうので不可。
+//   ※ Windows なら `ipconfig | findstr IPv4`、macOS なら `ipconfig getifaddr en0` で確認。
+//   ※ 母艦と CoreS3 は同じ Wi-Fi LAN に置くこと。
 static constexpr const char* SERVER_HOST = "192.168.1.42";
 static constexpr uint16_t    SERVER_PORT = 8000;
 static constexpr const char* SERVER_PATH = "/chat";
+// 定期発話 / 外部 push の取り出し (GET /pull?wait=...) は
+// http_client.h の ChatClient::pull() がパスをハードコードしている。
+// SCHEDULE_ENABLED=0 でも /pull 自体は有効 (キュー空時は 204 が返る)。
 
 // セッション ID。会話履歴をサーバ側で保持したい場合に使う
 static constexpr const char* SESSION_ID  = "stackchan-01";
