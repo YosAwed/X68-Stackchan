@@ -23,10 +23,14 @@ def app_with_fakes(monkeypatch_module):
     fake_stt = types.ModuleType("stt")
 
     class _FakeSTT:
-        def __init__(self, *a, **kw): pass
+        def __init__(self, *a, **kw):
+            pass
+
         def transcribe(self, wav: bytes) -> str:
             return "user said something"
-        def status(self): return {"ok": True}
+
+        def status(self):
+            return {"ok": True}
 
     fake_stt.STT = _FakeSTT
     sys.modules["stt"] = fake_stt
@@ -34,10 +38,14 @@ def app_with_fakes(monkeypatch_module):
     fake_llm = types.ModuleType("llm")
 
     class _FakeLLM:
-        def __init__(self, *a, **kw): pass
+        def __init__(self, *a, **kw):
+            pass
+
         def chat(self, sid: str, text: str) -> str:
             return f"echo:{text}"
-        def status(self): return {"ok": True}
+
+        def status(self):
+            return {"ok": True}
 
     fake_llm.LLM = _FakeLLM
     sys.modules["llm"] = fake_llm
@@ -46,9 +54,13 @@ def app_with_fakes(monkeypatch_module):
 
     class _FakeTTS:
         backend = "fake"
-        def __init__(self, *a, **kw): pass
+
+        def __init__(self, *a, **kw):
+            pass
+
         def synthesize(self, text: str) -> bytes:
             return b"RIFF\x00\x00\x00\x00WAVE" + text.encode("utf-8")
+
         def status(self):
             return {"ok": True, "backend": "fake"}
 

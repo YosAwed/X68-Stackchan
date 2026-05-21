@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Any
 
 from croniter import croniter
-
 from emote import classify as classify_emote
 from utterance_queue import Utterance, UtteranceQueue
 

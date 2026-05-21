@@ -12,7 +12,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
-
 from scheduler import ScheduledTrigger, Scheduler
 from utterance_queue import UtteranceQueue
 

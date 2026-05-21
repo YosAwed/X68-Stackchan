@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from persona import DEFAULT_SYSTEM_PROMPT, load_persona
 
 
