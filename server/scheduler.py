@@ -35,15 +35,27 @@ class ScheduledTrigger:
     text: str | None = None      # kind="fixed" のみ
 
     def __post_init__(self):
+        if self.kind not in ("llm", "fixed"):
+            raise ValueError(f"trigger {self.name!r}: unknown kind={self.kind!r}")
         if self.kind == "llm" and not self.prompt:
             raise ValueError(f"trigger {self.name!r}: kind=llm requires prompt")
         if self.kind == "fixed" and not self.text:
             raise ValueError(f"trigger {self.name!r}: kind=fixed requires text")
-        if self.kind not in ("llm", "fixed"):
-            raise ValueError(f"trigger {self.name!r}: unknown kind={self.kind!r}")
+        # cron 式の妥当性は croniter に事前検査させる。
+        # croniter.is_valid は古いバージョンでは無い可能性があるので、
+        # 無ければ普通に croniter(...) を呼んで例外を拾う。
+        is_valid = getattr(croniter, "is_valid", None)
+        if callable(is_valid):
+            if not is_valid(self.cron):
+                raise ValueError(
+                    f"trigger {self.name!r}: invalid cron expression {self.cron!r}")
         # 次回発火予定時刻を内部状態として持つ
         self._iter = croniter(self.cron, datetime.now())
         self._next: datetime = self._iter.get_next(datetime)
+        # 発火履歴 (status() で参照)
+        self.fire_count: int = 0
+        self.last_fire: datetime | None = None
+        self.last_error: str | None = None
 
     def due(self, now: datetime) -> bool:
         if now >= self._next:
@@ -51,6 +63,15 @@ class ScheduledTrigger:
             self._next = self._iter.get_next(datetime)
             return True
         return False
+
+    def record_fire(self, when: datetime) -> None:
+        self.fire_count += 1
+        self.last_fire = when
+        self.last_error = None
+
+    def record_error(self, err: BaseException) -> None:
+        # 直近のエラーだけ保持。トレースは log.exception 側で出す。
+        self.last_error = f"{type(err).__name__}: {err}"
 
 
 class Scheduler:
@@ -125,8 +146,9 @@ class Scheduler:
                     if trig.due(now):
                         try:
                             await self._fire(trig)
-                        except Exception:
+                        except Exception as e:
                             log.exception("trigger %s fire failed", trig.name)
+                            trig.record_error(e)
                 await asyncio.sleep(self.POLL_INTERVAL_S)
         except asyncio.CancelledError:
             log.info("scheduler loop cancelled")
@@ -148,6 +170,7 @@ class Scheduler:
             bot_text=bot_text,
             source=f"sched:{trig.name}",
         ))
+        trig.record_fire(datetime.now())
 
     def status(self) -> dict[str, Any]:
         return {
@@ -158,6 +181,12 @@ class Scheduler:
                     "cron": t.cron,
                     "kind": t.kind,
                     "next": t._next.isoformat(timespec="seconds"),
+                    "fire_count": t.fire_count,
+                    "last_fire": (
+                        t.last_fire.isoformat(timespec="seconds")
+                        if t.last_fire else None
+                    ),
+                    "last_error": t.last_error,
                 }
                 for t in self.triggers
             ],

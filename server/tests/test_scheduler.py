@@ -59,6 +59,12 @@ def test_invalid_cron_rejected():
         ScheduledTrigger(name="bad", cron="not a cron", kind="fixed", text="x")
 
 
+def test_obviously_bad_cron_is_caught_by_is_valid():
+    # フィールド数が足りない cron はバリデーションで弾かれる
+    with pytest.raises(Exception):  # noqa: B017
+        ScheduledTrigger(name="bad", cron="0 0", kind="fixed", text="x")
+
+
 # ---------------------- from_file loader ----------------------
 
 
@@ -146,6 +152,30 @@ async def test_fire_skips_tts_when_llm_returns_empty():
     # 空文字なら TTS は走らずキューにも積まれない
     assert tts.calls == []
     assert q.size() == 0
+    # 空応答は発火カウントには載せない
+    assert t.fire_count == 0
+    assert t.last_fire is None
+
+
+@pytest.mark.asyncio
+async def test_fire_increments_fire_count_and_last_fire():
+    llm, tts, q = FakeLLM(), FakeTTS(), UtteranceQueue(4)
+    s = Scheduler(llm, tts, q)
+    t = ScheduledTrigger(name="counter", cron="* * * * *",
+                         kind="fixed", text="hi")
+    assert t.fire_count == 0
+    await s._fire(t)
+    await s._fire(t)
+    assert t.fire_count == 2
+    assert t.last_fire is not None
+    assert t.last_error is None
+
+
+def test_record_error_sets_last_error():
+    t = ScheduledTrigger(name="x", cron="* * * * *",
+                         kind="fixed", text="hi")
+    t.record_error(RuntimeError("boom"))
+    assert t.last_error == "RuntimeError: boom"
 
 
 # ---------------------- due() boundary ----------------------
@@ -175,9 +205,14 @@ def test_status_before_start_reports_not_running():
     assert st["running"] is False
     assert st["queue_size"] == 0
     assert len(st["triggers"]) == 1
-    assert st["triggers"][0]["name"] == "x"
-    assert st["triggers"][0]["cron"] == "* * * * *"
-    assert st["triggers"][0]["kind"] == "fixed"
+    t0 = st["triggers"][0]
+    assert t0["name"] == "x"
+    assert t0["cron"] == "* * * * *"
+    assert t0["kind"] == "fixed"
+    # 発火履歴フィールド (D 対応)
+    assert t0["fire_count"] == 0
+    assert t0["last_fire"] is None
+    assert t0["last_error"] is None
 
 
 @pytest.mark.asyncio

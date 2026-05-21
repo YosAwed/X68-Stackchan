@@ -15,8 +15,10 @@ import pytest
 
 
 @pytest.fixture(scope="module")
-def app_with_fakes():
+def app_with_fakes(monkeypatch_module):
     """main.py を import する前に重い依存をフェイクモジュールに差し替える。"""
+    # CI / テストでは pre-warm を抑制 (FakeTTS は動くが、無用なログ抑止)
+    monkeypatch_module.setenv("TTS_PREWARM", "0")
 
     fake_stt = types.ModuleType("stt")
 
@@ -158,3 +160,17 @@ def test_scheduler_status_when_disabled(client):
     r = client.get("/scheduler/status")
     assert r.status_code == 200
     assert r.json() == {"enabled": False}
+
+
+# ---------------- /admin ----------------
+
+
+def test_admin_returns_html(client):
+    r = client.get("/admin")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+    body = r.text
+    assert "<title>Stack-chan admin</title>" in body
+    # 主要なエンドポイントに JS で fetch している
+    for fragment in ("/ready", "/scheduler/status", "/enqueue"):
+        assert fragment in body
