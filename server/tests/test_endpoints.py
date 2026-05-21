@@ -88,6 +88,7 @@ def test_pull_returns_wav_and_headers_when_queued(client, app_with_fakes):
         wav=b"RIFFWAVbody",
         bot_text="こんにちは",
         source="sched:test",
+        emote="joy",
     ))
     r = client.get("/pull?wait=0")
     assert r.status_code == 200
@@ -95,6 +96,7 @@ def test_pull_returns_wav_and_headers_when_queued(client, app_with_fakes):
     assert r.content == b"RIFFWAVbody"
     assert unquote(r.headers["x-stackchan-bot-text"]) == "こんにちは"
     assert r.headers["x-stackchan-source"] == "sched:test"
+    assert r.headers["x-stackchan-emote"] == "joy"
 
 
 def test_pull_clamps_wait_into_range(client, app_with_fakes):
@@ -112,16 +114,18 @@ def test_enqueue_without_via_llm_uses_text_directly(client, app_with_fakes):
     # キューを空にしてから enqueue
     while app_with_fakes.queue.size() > 0:
         app_with_fakes.queue._q.get_nowait()
-    r = client.post("/enqueue", data={"text": "テスト発話", "via_llm": "false"})
+    r = client.post("/enqueue", data={"text": "やったー、X68 最高だね", "via_llm": "false"})
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True
-    assert body["bot_text"] == "テスト発話"
+    assert body["bot_text"] == "やったー、X68 最高だね"
+    assert body["emote"] == "joy"
     assert body["queue_size"] >= 1
-    # 続けて /pull で取り出せる
+    # 続けて /pull で取り出せて、ヘッダにも emote が乗る
     pull = client.get("/pull?wait=0")
     assert pull.status_code == 200
     assert b"RIFF" in pull.content  # FakeTTS は RIFF を返す
+    assert pull.headers["x-stackchan-emote"] == "joy"
 
 
 def test_enqueue_with_via_llm_routes_through_llm(client, app_with_fakes):

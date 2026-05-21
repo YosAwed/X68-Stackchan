@@ -123,7 +123,8 @@ static bool connectWiFi() {
 }
 
 // 応答 WAV を再生しながら、PCM の RMS で口パク (口閉/口開 2 フレーム)
-static void playWavWithLipsync(const uint8_t* wav, size_t size) {
+static void playWavWithLipsync(const uint8_t* wav, size_t size,
+                               const char* emote = nullptr) {
     if (!wav || size < 44) return;
 
     // WAV ヘッダから data チャンクを探す (簡易: 標準的な配置を仮定)
@@ -174,6 +175,12 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size) {
     int  last_face = -1;
     uint32_t last_update = 0;
 
+    // 発話中の (口開, 口閉) を emote タグに応じて決める。
+    // 未知 / 空 / nullptr なら既定の FACE_SPEAK_OPEN / FACE_SPEAK_CLOSED。
+    int face_open  = faces::FACE_SPEAK_OPEN;
+    int face_close = faces::FACE_SPEAK_CLOSED;
+    faces::resolve_speak_pair(emote, face_open, face_close);
+
     while (M5.Speaker.isPlaying()) {
         const uint32_t now = millis();
         if (now - last_update >= 40) {           // 25 fps 相当で更新
@@ -189,8 +196,7 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size) {
                 sumsq += (int32_t)s * s;
             }
             const int rms = (hi > lo) ? (int)std::sqrt((double)sumsq / (hi - lo)) : 0;
-            const int next = (rms > RMS_THRESH) ? faces::FACE_SPEAK_OPEN
-                                                : faces::FACE_SPEAK_CLOSED;
+            const int next = (rms > RMS_THRESH) ? face_open : face_close;
             if (next != last_face) {
                 g_face.show(next);
                 last_face = next;
@@ -205,8 +211,8 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size) {
         }
         delay(4);
     }
-    // 締めは口閉じ
-    g_face.show(faces::FACE_SPEAK_CLOSED);
+    // 締めは口閉じ (emote ペアに合わせる)
+    g_face.show(face_close);
 }
 
 static void handleHttpError(int status) {
@@ -295,11 +301,12 @@ void loop() {
                 g_last_pull_ms = millis();
                 PullResponse pr = ChatClient::pull(0);
                 if (pr.ok && pr.body && pr.body_size > 0) {
-                    Serial.printf("[PUSH] %s (source=%s)\n",
-                                  pr.bot_text.c_str(), pr.source.c_str());
+                    Serial.printf("[PUSH] %s (source=%s emote=%s)\n",
+                                  pr.bot_text.c_str(), pr.source.c_str(),
+                                  pr.emote.length() ? pr.emote.c_str() : "neutral");
                     setState(State::Speaking);     // 顔/サーボのみ。lipsync が表情を上書き
                     playAckBeep();
-                    playWavWithLipsync(pr.body, pr.body_size);
+                    playWavWithLipsync(pr.body, pr.body_size, pr.emote.c_str());
                     free(pr.body);
                     setState(State::Idle, faces::FACE_IDLE);
                 }
@@ -330,9 +337,12 @@ void loop() {
                     if (r.tts_backend.length() > 0) {
                         Serial.printf("[TTS ] %s\n", r.tts_backend.c_str());
                     }
+                    if (r.emote.length() > 0) {
+                        Serial.printf("[EMO ] %s\n", r.emote.c_str());
+                    }
                     g_state = State::Speaking;
                     playAckBeep();
-                    playWavWithLipsync(r.body, r.body_size);
+                    playWavWithLipsync(r.body, r.body_size, r.emote.c_str());
                     free(r.body);
                 } else {
                     handleHttpError(r.http_status);

@@ -37,6 +37,7 @@ from llm import LLM
 from tts import TTS
 from utterance_queue import UtteranceQueue, Utterance
 from scheduler import Scheduler
+from emote import classify as classify_emote
 
 load_dotenv()
 
@@ -127,10 +128,13 @@ def _wav_response(
         "X-Stackchan-Bot-Text": quote(bot_text),
         "X-Stackchan-Timing": _timing_header(timings),
         "X-Stackchan-TTS-Backend": os.getenv("TTS_BACKEND", "irodori"),
+        # CoreS3 側で口パク用の表情ペアを切り替えるためのヒント。
+        # neutral/joy/sad/embarrassed/confused/surprised/sleepy/confident の英小文字。
+        "X-Stackchan-Emote": classify_emote(bot_text),
     }
     if user_text is not None:
         headers["X-Stackchan-User-Text"] = quote(user_text)
-    log.info("timing %s", headers["X-Stackchan-Timing"])
+    log.info("timing %s emote=%s", headers["X-Stackchan-Timing"], headers["X-Stackchan-Emote"])
     return Response(content=wav, media_type="audio/wav", headers=headers)
 
 
@@ -275,6 +279,7 @@ async def pull(wait: float = 0.0):
             "X-Stackchan-Bot-Text":     quote(u.bot_text),
             "X-Stackchan-Source":       u.source,
             "X-Stackchan-TTS-Backend":  os.getenv("TTS_BACKEND", "irodori"),
+            "X-Stackchan-Emote":        u.emote,
         },
     )
 
@@ -300,10 +305,12 @@ async def enqueue(
     if not bot_text:
         raise HTTPException(500, "empty bot_text after LLM")
     wav = await asyncio.to_thread(tts.synthesize, bot_text)
-    ok = queue.push_nowait(Utterance(wav=wav, bot_text=bot_text, source=f"ext:{sid}"))
+    emote = classify_emote(bot_text)
+    ok = queue.push_nowait(Utterance(
+        wav=wav, bot_text=bot_text, source=f"ext:{sid}", emote=emote))
     if not ok:
         raise HTTPException(503, "utterance queue full")
-    return {"ok": True, "bot_text": bot_text, "queue_size": queue.size()}
+    return {"ok": True, "bot_text": bot_text, "emote": emote, "queue_size": queue.size()}
 
 
 @app.get("/scheduler/status")

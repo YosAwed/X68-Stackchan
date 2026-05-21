@@ -19,6 +19,7 @@ struct ChatResponse {
     String    bot_text;
     String    timing;
     String    tts_backend;
+    String    emote;                   // X-Stackchan-Emote: neutral/joy/sad/...
 };
 
 struct ReadyResponse {
@@ -35,6 +36,7 @@ struct PullResponse {
     size_t    body_size   = 0;
     String    bot_text;
     String    source;                    // "sched:morning_greet" / "ext:..." など
+    String    emote;                     // X-Stackchan-Emote
 };
 
 class ChatClient {
@@ -155,6 +157,8 @@ public:
                 r.timing = value;
             } else if (name == "x-stackchan-tts-backend") {
                 r.tts_backend = value;
+            } else if (name == "x-stackchan-emote") {
+                r.emote = value;
             }
         }
 
@@ -232,6 +236,8 @@ public:
                 r.bot_text = urlDecode(value);
             } else if (name == "x-stackchan-source") {
                 r.source = value;
+            } else if (name == "x-stackchan-emote") {
+                r.emote = value;
             }
         }
 
