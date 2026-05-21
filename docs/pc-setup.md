@@ -174,6 +174,8 @@ CoreS3 のシリアルログにも `[TIME]` と `[TTS ]` が出る。
 
 CoreS3 から接続するには、PC の LAN IP を確認して `firmware/include/config.h` に入れる。
 
+> ⚠️ `server/.env` 側の `SERVER_HOST` は **uvicorn の bind アドレス** (既定 `0.0.0.0`) で、LAN 内の他マシンから到達できるようにするためのもの。一方 `firmware/include/config.h` の `SERVER_HOST` は **CoreS3 が接続する母艦の LAN IP**。同名だが別物なので混同しないこと。母艦自身からの `curl localhost:8000/...` は通っても、CoreS3 側で `localhost` を指定すると自分自身を見にいってしまうので必ず LAN IP を入れる。
+
 Windows:
 
 ```powershell
@@ -195,6 +197,20 @@ static constexpr const char* SERVER_PATH = "/chat";
 ```
 
 CoreS3 と母艦 PC は同じ LAN 上に置く。Windows ファイアウォールや macOS のファイアウォールで 8000 番が塞がれていると、CoreS3 側は HTTP エラーになる。
+
+## 定期発話 / 外部 push (任意機能)
+
+`/chat` の往復とは別に、サーバ起点で CoreS3 に喋らせる経路がある。`.env` に下記を追加すると有効化される。
+
+```env
+SCHEDULE_ENABLED=1
+SCHEDULE_FILE=schedule.json
+QUEUE_MAX_SIZE=16
+```
+
+`server/schedule.json.example` をコピーして `server/schedule.json` を編集すると、cron 式 + LLM プロンプト or 固定文で定期発話を仕込める。外部 (Discord bot / curl) からは `POST /enqueue` で同じキューに発話を積める。詳細とエンドポイント仕様は [architecture.md §定期発話 / 外部 push](architecture.md#定期発話--外部-push) を参照。
+
+> 定期発話を使わない場合でも `SCHEDULE_ENABLED=0` のまま `/pull` と `/enqueue` は使える (キュー空時は 204 が返る)。
 
 ## よくある確認ポイント
 

@@ -10,7 +10,9 @@
 
 - M5Stack CoreS3 SE 本体 + USB-C ケーブル
 - スタックちゃん Takao Base (組立済 or キット)
-- サーボ SG90 ×2
+- Feetech SCS0009 シリアルサーボ ×2 (Yaw=ID1 / Pitch=ID2)
+  - StackChan 基板経由で UART (GPIO6/7, 1 Mbps) に接続。SG90 PWM サーボ用ではない
+  - サーボを使わない場合は `config.h` の `SERVO_ENABLED` を `0` にする
 - Mac mini (Apple Silicon 推奨)
 - 同一 Wi-Fi LAN (CoreS3 から Mac mini に IP で届くこと)
 
@@ -83,7 +85,7 @@ ipconfig getifaddr en0   # 例: 192.168.1.42
 
 ## 3. 動作確認
 
-[setup.md のセクション 3](setup.md#3-動作確認) と同じ。
+[setup.md のセクション 3](setup.md#3-動作確認-段階的に切り分ける) と同じ。CoreS3 単体 → サーバ疎通 → 会話、の順に切り分けるとよい。
 
 ## 4. トラブルシュート
 
