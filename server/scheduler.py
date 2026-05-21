@@ -179,29 +179,36 @@ class Scheduler:
 
     async def _fire(self, trig: ScheduledTrigger):
         log.info("scheduler ▶ %s (kind=%s)", trig.name, trig.kind)
-        if trig.kind == "llm":
-            # LLM 呼び出しはブロッキングなので別スレッドへ
-            bot_text = await asyncio.to_thread(self.llm.chat, trig.sid, trig.prompt)
-        else:
-            bot_text = trig.text or ""
-        if not bot_text:
-            log.warning("trigger %s produced empty text, skipping TTS", trig.name)
+        reservation = self.queue.reserve_nowait()
+        if reservation is None:
+            log.warning("trigger %s skipped because utterance queue is full", trig.name)
             return
-        # fixed トリガは事前合成済み bytes があればそれを再利用 (TTS 呼び出しを節約)
-        if trig.kind == "fixed" and trig._cached_wav is not None:
-            wav = trig._cached_wav
-        else:
-            wav = await asyncio.to_thread(self.tts.synthesize, bot_text)
-            # 起動時に失敗していた fixed もここで遅延キャッシュ
-            if trig.kind == "fixed":
-                trig._cached_wav = wav
-        self.queue.push_nowait(Utterance(
-            wav=wav,
-            bot_text=bot_text,
-            source=f"sched:{trig.name}",
-            emote=classify_emote(bot_text),
-        ))
-        trig.record_fire(datetime.now())
+        try:
+            if trig.kind == "llm":
+                # LLM 呼び出しはブロッキングなので別スレッドへ
+                bot_text = await asyncio.to_thread(self.llm.chat, trig.sid, trig.prompt)
+            else:
+                bot_text = trig.text or ""
+            if not bot_text:
+                log.warning("trigger %s produced empty text, skipping TTS", trig.name)
+                return
+            # fixed トリガは事前合成済み bytes があればそれを再利用 (TTS 呼び出しを節約)
+            if trig.kind == "fixed" and trig._cached_wav is not None:
+                wav = trig._cached_wav
+            else:
+                wav = await asyncio.to_thread(self.tts.synthesize, bot_text)
+                # 起動時に失敗していた fixed もここで遅延キャッシュ
+                if trig.kind == "fixed":
+                    trig._cached_wav = wav
+            reservation.commit(Utterance(
+                wav=wav,
+                bot_text=bot_text,
+                source=f"sched:{trig.name}",
+                emote=classify_emote(bot_text),
+            ))
+            trig.record_fire(datetime.now())
+        finally:
+            reservation.release()
 
     def status(self) -> dict[str, Any]:
         return {
@@ -222,4 +229,5 @@ class Scheduler:
                 for t in self.triggers
             ],
             "queue_size": self.queue.size(),
+            "queue_reserved": self.queue.reserved(),
         }
