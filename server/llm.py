@@ -9,7 +9,6 @@ from collections import OrderedDict, deque
 from typing import Deque, Dict, List
 
 import httpx
-
 from persona import SYSTEM_PROMPT
 
 log = logging.getLogger(__name__)

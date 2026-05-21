@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from emote import VALID_CATEGORIES, classify
 
 

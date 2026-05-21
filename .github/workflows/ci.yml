@@ -37,13 +37,14 @@ jobs:
             ruff==0.6.9
 
       - name: py_compile (syntax sanity)
-        # CUDA / Whisper を import するモジュール (main.py / stt.py / tts_irodori.py)
-        # は CI 環境では import 不可能なので、まず構文だけ確認する
+        # import は実行せず、.pyc も書かずに server 配下の Python 構文だけを確認する。
         run: |
-          python -m py_compile \
-            server/utterance_queue.py \
-            server/scheduler.py \
-            server/persona.py
+          python - <<'PY'
+          from pathlib import Path
+
+          for path in sorted(Path("server").rglob("*.py")):
+              compile(path.read_text(encoding="utf-8"), str(path), "exec")
+          PY
 
       - name: ruff (lint)
         run: ruff check server/ --select E,F,W,I --ignore E501
@@ -61,13 +62,18 @@ jobs:
         # 完全ビルドは PlatformIO の Docker で時間がかかるので、
         # ヘッダだけ最低限プリプロセッサにかけて構文崩れがないか確認
         run: |
-          cp firmware/include/config.h.example firmware/include/config.h
           sudo apt-get update -qq
           sudo apt-get install -y -qq g++
-          # 単に C++ プリプロセッサに通せれば OK (リンクはしない)
+          cat > /tmp/config_check.cpp <<'EOF'
+          #include <cstdint>
+          #include "config.h.example"
+          EOF
+          # 単に C++ コンパイラに通せれば OK (リンクはしない)
           g++ -fsyntax-only -std=gnu++17 -x c++ \
             -DARDUINO=10800 \
-            -Wno-everything \
-            firmware/include/config.h 2>&1 | tail -20 || true
-          # SERVER_HOST / SERVER_PORT / SERVO_ENABLED 定数が定義されているか確認
-          grep -E "SERVER_HOST|SERVER_PORT|SERVO_ENABLED" firmware/include/config.h
+            -Ifirmware/include \
+            /tmp/config_check.cpp
+          # 必須設定が全部定義されているか確認
+          grep -q "SERVER_HOST" firmware/include/config.h.example
+          grep -q "SERVER_PORT" firmware/include/config.h.example
+          grep -q "SERVO_ENABLED" firmware/include/config.h.example

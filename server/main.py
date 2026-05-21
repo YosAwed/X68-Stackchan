@@ -29,15 +29,14 @@ from pathlib import Path
 from urllib.parse import quote
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import Response, JSONResponse
-
-from stt import STT
-from llm import LLM
-from tts import TTS
-from utterance_queue import UtteranceQueue, Utterance
-from scheduler import Scheduler
 from emote import classify as classify_emote
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import JSONResponse, Response
+from llm import LLM
+from scheduler import Scheduler
+from stt import STT
+from tts import TTS
+from utterance_queue import Utterance, UtteranceQueue
 
 load_dotenv()
 
