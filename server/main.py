@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
 import os
 import time
@@ -30,7 +31,7 @@ from urllib.parse import quote
 
 from dotenv import load_dotenv
 from emote import classify as classify_emote
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, Response
 from llm import LLM
 from scheduler import Scheduler
@@ -64,6 +65,7 @@ llm = LLM(
 tts = TTS()  # backend / env 解釈は tts.py + tts_<backend>.py に委譲
 
 queue = UtteranceQueue(max_size=int(os.getenv("QUEUE_MAX_SIZE", "16")))
+ENQUEUE_TOKEN = os.getenv("ENQUEUE_TOKEN", "")
 _scheduler: Scheduler | None = None
 
 
@@ -135,6 +137,16 @@ def _wav_response(
         headers["X-Stackchan-User-Text"] = quote(user_text)
     log.info("timing %s emote=%s", headers["X-Stackchan-Timing"], headers["X-Stackchan-Emote"])
     return Response(content=wav, media_type="audio/wav", headers=headers)
+
+
+def _authorize_enqueue(token: str | None) -> None:
+    if not ENQUEUE_TOKEN:
+        raise HTTPException(
+            status_code=403,
+            detail="ENQUEUE_TOKEN is not configured; /enqueue is disabled",
+        )
+    if not token or not hmac.compare_digest(token, ENQUEUE_TOKEN):
+        raise HTTPException(status_code=401, detail="invalid enqueue token")
 
 
 @app.get("/health")
@@ -288,27 +300,40 @@ async def enqueue(
     text: str = Form(...),
     via_llm: bool = Form(False),
     sid: str = Form("external"),
+    x_stackchan_token: str | None = Header(None),
 ):
     """外部 (Discord bot / curl など) から発話を積む。
 
     via_llm=true で `text` をプロンプトとして LLM を通してから TTS、
     false なら `text` をそのまま TTS する。
     """
+    _authorize_enqueue(x_stackchan_token)
     text = text.strip()
     if not text:
         raise HTTPException(400, "text is empty")
-    if via_llm:
-        bot_text = await asyncio.to_thread(llm.chat, sid, text)
-    else:
-        bot_text = text
-    if not bot_text:
-        raise HTTPException(500, "empty bot_text after LLM")
-    wav = await asyncio.to_thread(tts.synthesize, bot_text)
-    emote = classify_emote(bot_text)
-    ok = queue.push_nowait(Utterance(
-        wav=wav, bot_text=bot_text, source=f"ext:{sid}", emote=emote))
-    if not ok:
+    reservation = queue.reserve_nowait()
+    if reservation is None:
         raise HTTPException(503, "utterance queue full")
+    try:
+        if via_llm:
+            bot_text = await asyncio.to_thread(llm.chat, sid, text)
+        else:
+            bot_text = text
+        if not bot_text:
+            raise HTTPException(500, "empty bot_text after LLM")
+        wav = await asyncio.to_thread(tts.synthesize, bot_text)
+        emote = classify_emote(bot_text)
+        ok = reservation.commit(Utterance(
+            wav=wav,
+            bot_text=bot_text,
+            source=f"ext:{sid}",
+            emote=emote,
+        ))
+        if not ok:
+            raise HTTPException(503, "utterance queue full")
+    except Exception:
+        reservation.release()
+        raise
     return {"ok": True, "bot_text": bot_text, "emote": emote, "queue_size": queue.size()}
 
 
@@ -321,8 +346,7 @@ def scheduler_status():
 
 # ---- 簡易管理画面 -----------------------------------------------------------
 # /admin を開くと /ready /scheduler/status をブラウザから見れる。
-# /enqueue を叩くフォームつき。認証なしのローカル運用専用なので、
-# uvicorn を 0.0.0.0 で外に出している場合は逆プロキシ + Basic 認証推奨。
+# /enqueue を叩くフォームつき。送信時は ENQUEUE_TOKEN と同じ値を入力する。
 ADMIN_HTML = """<!doctype html>
 <html lang="ja"><head>
 <meta charset="utf-8"><title>Stack-chan admin</title>
@@ -353,6 +377,7 @@ ADMIN_HTML = """<!doctype html>
 <h2>テスト発話 push (<code>/enqueue</code>)</h2>
 <form id="f">
   <input type="text" name="text" placeholder="読み上げるテキスト" required>
+  <input type="text" name="token" placeholder="ENQUEUE_TOKEN" required>
   <label><input type="checkbox" name="via_llm"> LLM 経由</label>
   <button type="submit">送信</button>
 </form>
@@ -392,7 +417,13 @@ document.getElementById('f').addEventListener('submit', async ev => {
   // checkbox は付いていないと送信されないので明示
   if(!fd.has('via_llm')) fd.set('via_llm','false'); else fd.set('via_llm','true');
   fd.set('sid','admin');
-  const r = await fetch('/enqueue',{method:'POST',body:fd});
+  const token = fd.get('token');
+  fd.delete('token');
+  const r = await fetch('/enqueue',{
+    method:'POST',
+    body:fd,
+    headers:{'X-Stackchan-Token': token}
+  });
   const j = await r.json().catch(()=>({error:'parse failed', status:r.status}));
   document.getElementById('enq').textContent = JSON.stringify(j, null, 2);
   loadSched();
