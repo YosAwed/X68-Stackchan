@@ -19,7 +19,7 @@ M5Stack 公式スタックちゃん (CoreS3 SE) を、X68000 擬人化キャラ 
 > TTS に [Irodori-TTS-Lite](https://github.com/YosAwed/Irodori-TTS-Lite) (upstream: [kizuna-intelligence/Irodori-TTS-Lite](https://github.com/kizuna-intelligence/Irodori-TTS-Lite) の pip 対応フォーク) を採用している関係で、Irodori 経路は CUDA 必須 (Ampere 以降推奨)。NVIDIA GPU が無い場合は VOICEVOX 経路に切替。
 
 起動時に Human68k 風のスプラッシュが流れて、ぺけ子ちゃんの Avatar が立ち上がる、というのが完成形のイメージ。
-ぺけ子ちゃんのアートワーク自体は同人由来なのでリポには同梱せず、`firmware/include/pekeko_theme.h` のカラーパレットと、好みの顔絵差し替えポイントだけを公開している。
+分割済みの 36 表情 (`firmware/data/face_01.jpg` 〜 `face_36.jpg`) はリポに同梱しており、`pio run -t uploadfs` でそのまま LittleFS に焼ける。元になったスプライトシート画像は同人由来のため `firmware/assets/raw/` には commit せず、`.gitignore` で除外している (再生成したい場合のみ自分で配置して `firmware/tools/slice.py` を回す)。スプラッシュ画面の色は `firmware/include/pekeko_theme.h`、シーンごとの表情割当は `firmware/include/face_map.h` で差し替えられる。
 
 ### 最小確認手順 (段階的に切り分け)
 
