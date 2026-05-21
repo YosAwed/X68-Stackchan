@@ -6,6 +6,8 @@
 // ========================================================
 #pragma once
 
+#include <cstring>  // resolve_speak_pair の strcmp
+
 namespace stackchan {
 namespace faces {
 
@@ -63,9 +65,54 @@ inline constexpr int FACE_THINKING      = F_THINKING_POSE;
 inline constexpr int FACE_THINKING_LONG = F_BORED;
 // 無音だった (no-speech 応答)
 inline constexpr int FACE_NO_SPEECH     = F_EMBARRASSED;
-// 口パク (発話中)
+// 口パク (発話中) — neutral 既定
 inline constexpr int FACE_SPEAK_CLOSED  = F_SMILE;       // 口閉じ
 inline constexpr int FACE_SPEAK_OPEN    = F_DETERMINED;  // 口開け (目は維持)
+
+// ---- 感情ごとの口パクペア ----
+// サーバから X-Stackchan-Emote で受け取ったタグに応じて、発話中の口パク
+// (FACE_SPEAK_OPEN / FACE_SPEAK_CLOSED) を以下のペアに差し替える。
+// 未知タグ / 空文字なら上の既定値にフォールバック。
+//   { closed, open }  並び順
+inline constexpr int FACE_EMOTE_JOY_CLOSED         = F_SOFT_SMILE;        // 11 やわらか
+inline constexpr int FACE_EMOTE_JOY_OPEN           = F_JOY;               // 30 喜び口開け
+inline constexpr int FACE_EMOTE_SAD_CLOSED         = F_SAD;               // 08 悲しみ
+inline constexpr int FACE_EMOTE_SAD_OPEN           = F_CRYING;            // 24 泣き
+inline constexpr int FACE_EMOTE_EMBARRASSED_CLOSED = F_BASHFUL;           // 31 はにかみ
+inline constexpr int FACE_EMOTE_EMBARRASSED_OPEN   = F_EMBARRASSED;       // 06 困り (汗)
+inline constexpr int FACE_EMOTE_CONFUSED_CLOSED    = F_QUESTION;          // 15 はてな
+inline constexpr int FACE_EMOTE_CONFUSED_OPEN      = F_POUT;              // 17 拗ね
+inline constexpr int FACE_EMOTE_SURPRISED_CLOSED   = F_SPARKLE_EYES;      // 27 キラキラ
+inline constexpr int FACE_EMOTE_SURPRISED_OPEN     = F_SURPRISED;         // 05 驚き
+inline constexpr int FACE_EMOTE_SLEEPY_CLOSED      = F_SLEEPING;          // 09 就寝
+inline constexpr int FACE_EMOTE_SLEEPY_OPEN        = F_YAWN_SMALL;        // 18 あくび
+inline constexpr int FACE_EMOTE_CONFIDENT_CLOSED   = F_SOFT_SMILE;        // 11 やわらか
+inline constexpr int FACE_EMOTE_CONFIDENT_OPEN     = F_CONFIDENT;         // 19 自信
+
+// emote タグ → (open, closed) のペアを返す軽量ルックアップ。
+// `out_open` / `out_closed` に書き戻す。未知タグなら既定値のまま。
+inline void resolve_speak_pair(const char* emote,
+                               int& out_open, int& out_closed) {
+    out_open   = FACE_SPEAK_OPEN;
+    out_closed = FACE_SPEAK_CLOSED;
+    if (!emote || !*emote) return;
+    // strcmp は <cstring> 込み。main.cpp 側で <cstring> を include している前提。
+    if      (!strcmp(emote, "joy"))         { out_open = FACE_EMOTE_JOY_OPEN;
+                                              out_closed = FACE_EMOTE_JOY_CLOSED; }
+    else if (!strcmp(emote, "sad"))         { out_open = FACE_EMOTE_SAD_OPEN;
+                                              out_closed = FACE_EMOTE_SAD_CLOSED; }
+    else if (!strcmp(emote, "embarrassed")) { out_open = FACE_EMOTE_EMBARRASSED_OPEN;
+                                              out_closed = FACE_EMOTE_EMBARRASSED_CLOSED; }
+    else if (!strcmp(emote, "confused"))    { out_open = FACE_EMOTE_CONFUSED_OPEN;
+                                              out_closed = FACE_EMOTE_CONFUSED_CLOSED; }
+    else if (!strcmp(emote, "surprised"))   { out_open = FACE_EMOTE_SURPRISED_OPEN;
+                                              out_closed = FACE_EMOTE_SURPRISED_CLOSED; }
+    else if (!strcmp(emote, "sleepy"))      { out_open = FACE_EMOTE_SLEEPY_OPEN;
+                                              out_closed = FACE_EMOTE_SLEEPY_CLOSED; }
+    else if (!strcmp(emote, "confident"))   { out_open = FACE_EMOTE_CONFIDENT_OPEN;
+                                              out_closed = FACE_EMOTE_CONFIDENT_CLOSED; }
+    // "neutral" やその他は既定値のまま
+}
 // エラー系
 inline constexpr int FACE_ERR_WIFI      = F_FLUSTERED;
 inline constexpr int FACE_ERR_HTTP      = F_PANIC;

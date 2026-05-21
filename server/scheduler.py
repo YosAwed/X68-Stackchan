@@ -20,6 +20,7 @@ from typing import Any
 
 from croniter import croniter
 
+from emote import classify as classify_emote
 from utterance_queue import Utterance, UtteranceQueue
 
 log = logging.getLogger(__name__)
@@ -33,6 +34,11 @@ class ScheduledTrigger:
     sid: str = "scheduled"
     prompt: str | None = None    # kind="llm" のみ
     text: str | None = None      # kind="fixed" のみ
+
+    # kind="fixed" の場合に事前合成した WAV を保持しておくキャッシュ。
+    # text が不変なので Scheduler.start() で一度だけ合成し、以降の発火では
+    # TTS を呼ばずにこの bytes をそのままキューへ。
+    _cached_wav: bytes | None = None
 
     def __post_init__(self):
         if self.kind not in ("llm", "fixed"):
@@ -125,7 +131,25 @@ class Scheduler:
         if not self.triggers:
             log.info("scheduler has no triggers, not starting loop")
             return
+        # kind="fixed" は text が不変なので、起動時に一度だけ TTS を回して
+        # bytes をキャッシュしておく。以後の発火は TTS をスキップできる。
+        await self._prewarm_fixed_triggers()
         self._task = asyncio.create_task(self._loop(), name="utterance-scheduler")
+
+    async def _prewarm_fixed_triggers(self):
+        fixed = [t for t in self.triggers if t.kind == "fixed"]
+        if not fixed:
+            return
+        log.info("scheduler pre-synthesizing %d fixed trigger(s) ...", len(fixed))
+        for t in fixed:
+            try:
+                wav = await asyncio.to_thread(self.tts.synthesize, t.text or "")
+                t._cached_wav = wav
+                log.info("  cached %s (%d bytes)", t.name, len(wav))
+            except Exception as e:
+                # キャッシュ失敗は致命的でない (発火時に再試行される)
+                log.exception("trigger %s pre-synth failed", t.name)
+                t.record_error(e)
 
     async def stop(self):
         if self._task is None:
@@ -164,11 +188,19 @@ class Scheduler:
         if not bot_text:
             log.warning("trigger %s produced empty text, skipping TTS", trig.name)
             return
-        wav = await asyncio.to_thread(self.tts.synthesize, bot_text)
+        # fixed トリガは事前合成済み bytes があればそれを再利用 (TTS 呼び出しを節約)
+        if trig.kind == "fixed" and trig._cached_wav is not None:
+            wav = trig._cached_wav
+        else:
+            wav = await asyncio.to_thread(self.tts.synthesize, bot_text)
+            # 起動時に失敗していた fixed もここで遅延キャッシュ
+            if trig.kind == "fixed":
+                trig._cached_wav = wav
         self.queue.push_nowait(Utterance(
             wav=wav,
             bot_text=bot_text,
             source=f"sched:{trig.name}",
+            emote=classify_emote(bot_text),
         ))
         trig.record_fire(datetime.now())
 

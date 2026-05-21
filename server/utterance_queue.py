@@ -17,6 +17,7 @@ class Utterance:
     wav: bytes        # 合成済み WAV
     bot_text: str     # 表示用テキスト
     source: str       # "sched:<name>" / "ext:<sid>" など発信元タグ
+    emote: str = "neutral"  # CoreS3 側の口パク表情切替ヒント (emote.classify の出力)
 
 
 class UtteranceQueue:

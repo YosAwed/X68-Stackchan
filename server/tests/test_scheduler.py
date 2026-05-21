@@ -115,13 +115,15 @@ async def test_fire_fixed_pushes_to_queue():
     llm, tts, q = FakeLLM(), FakeTTS(), UtteranceQueue(4)
     s = Scheduler(llm, tts, q)
     t = ScheduledTrigger(name="fx", cron="* * * * *",
-                         kind="fixed", text="hello")
+                         kind="fixed", text="やったー、できた")
     await s._fire(t)
-    assert tts.calls == ["hello"]
+    assert tts.calls == ["やったー、できた"]
     u = await q.pull(0)
     assert u is not None
-    assert u.bot_text == "hello"
+    assert u.bot_text == "やったー、できた"
     assert u.source == "sched:fx"
+    # 喜び系キーワードを含むので emote=joy になる
+    assert u.emote == "joy"
 
 
 @pytest.mark.asyncio
@@ -176,6 +178,49 @@ def test_record_error_sets_last_error():
                          kind="fixed", text="hi")
     t.record_error(RuntimeError("boom"))
     assert t.last_error == "RuntimeError: boom"
+
+
+@pytest.mark.asyncio
+async def test_start_pre_synthesizes_fixed_triggers_once():
+    """fixed トリガは start() 時に 1 度だけ TTS を呼び、以後発火では再合成しない。"""
+    llm, tts, q = FakeLLM(), FakeTTS(), UtteranceQueue(8)
+    s = Scheduler(llm, tts, q)
+    fx = ScheduledTrigger(name="fx", cron="0 4 * 1 *",  # 遠未来
+                          kind="fixed", text="お昼だよ")
+    s.triggers.append(fx)
+
+    await s.start()
+    assert tts.calls == ["お昼だよ"]  # pre-synth で 1 回
+    assert fx._cached_wav is not None
+    cached = fx._cached_wav
+
+    # 発火を 2 回手動で起こしても TTS 呼び出し回数は増えない
+    await s._fire(fx)
+    await s._fire(fx)
+    assert tts.calls == ["お昼だよ"]
+
+    # キューには毎回キャッシュした bytes がそのまま積まれる
+    u1 = await q.pull(0)
+    u2 = await q.pull(0)
+    assert u1 is not None and u2 is not None
+    assert u1.wav is cached
+    assert u2.wav is cached
+
+    await s.stop()
+
+
+@pytest.mark.asyncio
+async def test_llm_triggers_are_not_pre_synthesized():
+    llm, tts, q = FakeLLM(), FakeTTS(), UtteranceQueue(4)
+    s = Scheduler(llm, tts, q)
+    t = ScheduledTrigger(name="ai", cron="0 4 * 1 *",
+                         kind="llm", prompt="hi")
+    s.triggers.append(t)
+    await s.start()
+    # LLM トリガは応答が毎回違うのでキャッシュしない
+    assert tts.calls == []
+    assert t._cached_wav is None
+    await s.stop()
 
 
 # ---------------------- due() boundary ----------------------
