@@ -57,6 +57,8 @@ inline constexpr int FACE_BOOT_DONE     = F_WAVE;
 inline constexpr int FACE_IDLE          = F_NEUTRAL;
 // 長時間放置 (未使用、将来用)
 inline constexpr int FACE_IDLE_LONG     = F_SLEEPING;
+// まばたきで一瞬挟む顔 (Idle 中に短時間表示してすぐ FACE_IDLE に戻す)
+inline constexpr int FACE_BLINK         = F_LAUGH_EYES_CLOSED;
 // 録音中
 inline constexpr int FACE_LISTENING     = F_QUESTION;
 // サーバ問い合わせ中

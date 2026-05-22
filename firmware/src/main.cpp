@@ -31,6 +31,36 @@ static bool           g_wait_release_after_auto_send = false;
 static uint32_t       g_last_mic_log_ms = 0;
 static uint32_t       g_last_pull_ms    = 0;
 
+// ---- Idle 中のまばたき ----
+// 4〜8 秒のランダム間隔で目を閉じた表情 (FACE_BLINK) を 150 ms 表示する。
+// Speaking / Listening / Thinking 中は動かない (state が Idle の時だけ走る)。
+static constexpr uint32_t BLINK_HOLD_MS = 150;
+static constexpr uint32_t BLINK_MIN_MS  = 4000;
+static constexpr uint32_t BLINK_MAX_MS  = 8000;
+static uint32_t g_next_blink_ms    = 0;   // 次のまばたき開始予定 (millis())
+static uint32_t g_blink_started_ms = 0;   // 0 = 表示してない、>0 = 表示中の開始時刻
+
+static inline void scheduleNextBlink() {
+    const uint32_t span = BLINK_MAX_MS - BLINK_MIN_MS;
+    g_next_blink_ms    = millis() + BLINK_MIN_MS + (uint32_t)(rand() % span);
+    g_blink_started_ms = 0;
+}
+
+static inline void updateIdleBlink() {
+    const uint32_t now = millis();
+    if (g_blink_started_ms != 0) {
+        if (now - g_blink_started_ms >= BLINK_HOLD_MS) {
+            g_face.show(faces::FACE_IDLE);
+            scheduleNextBlink();
+        }
+        return;
+    }
+    if (now >= g_next_blink_ms) {
+        g_face.show(faces::FACE_BLINK);
+        g_blink_started_ms = now;
+    }
+}
+
 // 定期発話 / 外部 push をサーバから取りに行く間隔 (Idle 中のみ)
 constexpr uint32_t PULL_INTERVAL_MS = 30000;
 
@@ -51,6 +81,12 @@ static void setState(State s, int face_id = -1) {
     g_state = s;
     if (face_id > 0) g_face.show(face_id);
     clearSideStatus();
+    // Idle に入る時にまばたきタイマを初期化、Idle 以外に出る時は停止。
+    if (s == State::Idle) {
+        scheduleNextBlink();
+    } else {
+        g_blink_started_ms = 0;
+    }
 #if SERVO_ENABLED
     switch (s) {
         case State::Idle:      g_servo.goIdle();      break;
@@ -311,6 +347,8 @@ void loop() {
                     setState(State::Idle, faces::FACE_IDLE);
                 }
             }
+            // 何もない時はまばたきだけ刻む
+            updateIdleBlink();
             break;
 
         case State::Listening: {
