@@ -14,11 +14,16 @@ from urllib.parse import unquote
 import pytest
 
 
+TEST_ENQUEUE_TOKEN = "test-token-xyz"
+
+
 @pytest.fixture(scope="module")
 def app_with_fakes(monkeypatch_module):
     """main.py を import する前に重い依存をフェイクモジュールに差し替える。"""
     # CI / テストでは pre-warm を抑制 (FakeTTS は動くが、無用なログ抑止)
     monkeypatch_module.setenv("TTS_PREWARM", "0")
+    # /enqueue は ENQUEUE_TOKEN env が必要なのでテスト用トークンを仕込む
+    monkeypatch_module.setenv("ENQUEUE_TOKEN", TEST_ENQUEUE_TOKEN)
 
     fake_stt = types.ModuleType("stt")
 
@@ -126,7 +131,7 @@ def test_enqueue_without_via_llm_uses_text_directly(client, app_with_fakes):
     # キューを空にしてから enqueue
     while app_with_fakes.queue.size() > 0:
         app_with_fakes.queue._q.get_nowait()
-    r = client.post("/enqueue", data={"text": "やったー、X68 最高だね", "via_llm": "false"})
+    r = client.post("/enqueue", data={"text": "やったー、X68 最高だね", "via_llm": "false"}, headers={"X-Stackchan-Token": TEST_ENQUEUE_TOKEN})
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True
@@ -140,17 +145,53 @@ def test_enqueue_without_via_llm_uses_text_directly(client, app_with_fakes):
     assert pull.headers["x-stackchan-emote"] == "joy"
 
 
+def test_enqueue_uses_wav_cache_when_enabled(tmp_path, app_with_fakes):
+    """TTS_CACHE_DIR が有効な状態で同じ text を 2 回 enqueue したら、
+    2 回目は TTS を呼ばずキャッシュから取れる。"""
+    from fastapi.testclient import TestClient
+    from wav_cache import WavCache
+
+    # ランタイムでキャッシュ dir を差し替える
+    original_cache = app_with_fakes.wav_cache
+    app_with_fakes.wav_cache = WavCache(dir=tmp_path)
+
+    # キューを空に
+    while app_with_fakes.queue.size() > 0:
+        app_with_fakes.queue._q.get_nowait()
+
+    # synthesize の呼び出し回数を追跡するため、wrap して差し替える
+    tts = app_with_fakes.tts
+    original_synth = tts.synthesize
+    counter = {"n": 0}
+
+    def counting_synth(text: str) -> bytes:
+        counter["n"] += 1
+        return original_synth(text)
+
+    tts.synthesize = counting_synth  # type: ignore[assignment]
+
+    try:
+        with TestClient(app_with_fakes.app) as c:
+            r1 = c.post("/enqueue", data={"text": "同じこと", "via_llm": "false"}, headers={"X-Stackchan-Token": TEST_ENQUEUE_TOKEN})
+            r2 = c.post("/enqueue", data={"text": "同じこと", "via_llm": "false"}, headers={"X-Stackchan-Token": TEST_ENQUEUE_TOKEN})
+        assert r1.status_code == 200 and r2.status_code == 200
+        assert counter["n"] == 1  # 2 回目はキャッシュヒットで TTS スキップ
+    finally:
+        tts.synthesize = original_synth  # type: ignore[assignment]
+        app_with_fakes.wav_cache = original_cache
+
+
 def test_enqueue_with_via_llm_routes_through_llm(client, app_with_fakes):
     while app_with_fakes.queue.size() > 0:
         app_with_fakes.queue._q.get_nowait()
-    r = client.post("/enqueue", data={"text": "hi", "via_llm": "true"})
+    r = client.post("/enqueue", data={"text": "hi", "via_llm": "true"}, headers={"X-Stackchan-Token": TEST_ENQUEUE_TOKEN})
     assert r.status_code == 200
     # FakeLLM は "echo:hi" を返すので bot_text もそれになる
     assert r.json()["bot_text"] == "echo:hi"
 
 
 def test_enqueue_rejects_empty_text(client):
-    r = client.post("/enqueue", data={"text": "  "})
+    r = client.post("/enqueue", data={"text": "  "}, headers={"X-Stackchan-Token": TEST_ENQUEUE_TOKEN})
     assert r.status_code == 400
     assert "empty" in r.json().get("detail", "").lower()
 
@@ -164,7 +205,7 @@ def test_enqueue_returns_503_when_queue_full(client, app_with_fakes):
         ok = app_with_fakes.queue.push_nowait(
             __import__("utterance_queue").Utterance(b"a", f"t{i}", "x"))
         assert ok
-    r = client.post("/enqueue", data={"text": "overflow"})
+    r = client.post("/enqueue", data={"text": "overflow"}, headers={"X-Stackchan-Token": TEST_ENQUEUE_TOKEN})
     assert r.status_code == 503
 
 

@@ -21,6 +21,7 @@ from typing import Any
 from croniter import croniter
 from emote import classify as classify_emote
 from utterance_queue import Utterance, UtteranceQueue
+from wav_cache import WavCache
 
 log = logging.getLogger(__name__)
 
@@ -91,16 +92,19 @@ class Scheduler:
 
     POLL_INTERVAL_S = 30
 
-    def __init__(self, llm, tts, queue: UtteranceQueue):
+    def __init__(self, llm, tts, queue: UtteranceQueue,
+                 wav_cache: WavCache | None = None):
         self.llm = llm
         self.tts = tts
         self.queue = queue
+        self.wav_cache = wav_cache if wav_cache is not None else WavCache(dir=None)
         self.triggers: list[ScheduledTrigger] = []
         self._task: asyncio.Task | None = None
 
     @classmethod
-    def from_file(cls, path: Path, llm, tts, queue: UtteranceQueue) -> "Scheduler":
-        s = cls(llm, tts, queue)
+    def from_file(cls, path: Path, llm, tts, queue: UtteranceQueue,
+                  wav_cache: WavCache | None = None) -> "Scheduler":
+        s = cls(llm, tts, queue, wav_cache=wav_cache)
         if not path.exists():
             log.warning("schedule file not found: %s (scheduler will idle)", path)
             return s
@@ -141,10 +145,18 @@ class Scheduler:
             return
         log.info("scheduler pre-synthesizing %d fixed trigger(s) ...", len(fixed))
         for t in fixed:
-            try:
-                wav = await asyncio.to_thread(self.tts.synthesize, t.text or "")
+            text = t.text or ""
+            # まずディスクキャッシュを試す (前回起動時の合成結果が残っていれば即時)
+            wav = self.wav_cache.get(text)
+            if wav is not None:
                 t._cached_wav = wav
-                log.info("  cached %s (%d bytes)", t.name, len(wav))
+                log.info("  cached %s (%d bytes, from disk)", t.name, len(wav))
+                continue
+            try:
+                wav = await asyncio.to_thread(self.tts.synthesize, text)
+                t._cached_wav = wav
+                self.wav_cache.put(text, wav)  # 次回起動用にディスクへ
+                log.info("  cached %s (%d bytes, fresh)", t.name, len(wav))
             except Exception as e:
                 # キャッシュ失敗は致命的でない (発火時に再試行される)
                 log.exception("trigger %s pre-synth failed", t.name)

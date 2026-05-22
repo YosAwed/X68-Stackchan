@@ -38,6 +38,7 @@ from scheduler import Scheduler
 from stt import STT
 from tts import TTS
 from utterance_queue import Utterance, UtteranceQueue
+from wav_cache import WavCache
 
 load_dotenv()
 
@@ -61,11 +62,16 @@ llm = LLM(
     temperature=float(os.getenv("OLLAMA_TEMPERATURE", "0.7")),
     num_predict=int(os.getenv("OLLAMA_NUM_PREDICT", "200")),
     max_sessions=int(os.getenv("MAX_SESSIONS", "16")),
+    history_db=os.getenv("LLM_HISTORY_DB") or None,
 )
 tts = TTS()  # backend / env 解釈は tts.py + tts_<backend>.py に委譲
 
 queue = UtteranceQueue(max_size=int(os.getenv("QUEUE_MAX_SIZE", "16")))
 ENQUEUE_TOKEN = os.getenv("ENQUEUE_TOKEN", "")
+wav_cache = WavCache(
+    dir=os.getenv("TTS_CACHE_DIR") or None,
+    version=os.getenv("TTS_CACHE_VERSION", "v1"),
+)
 _scheduler: Scheduler | None = None
 
 
@@ -97,7 +103,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_prewarm_tts())
     if os.getenv("SCHEDULE_ENABLED", "0") == "1":
         path = Path(os.getenv("SCHEDULE_FILE", "schedule.json"))
-        _scheduler = Scheduler.from_file(path, llm, tts, queue)
+        _scheduler = Scheduler.from_file(path, llm, tts, queue, wav_cache=wav_cache)
         await _scheduler.start()
     else:
         log.info("scheduler disabled (set SCHEDULE_ENABLED=1 to enable)")
@@ -321,7 +327,15 @@ async def enqueue(
             bot_text = text
         if not bot_text:
             raise HTTPException(500, "empty bot_text after LLM")
-        wav = await asyncio.to_thread(tts.synthesize, bot_text)
+        # 非 LLM 経路は text が不変なのでディスクキャッシュを通す。
+        # LLM 経路は応答が毎回違うのでキャッシュしない。
+        cached = wav_cache.get(bot_text) if not via_llm else None
+        if cached is not None:
+            wav = cached
+        else:
+            wav = await asyncio.to_thread(tts.synthesize, bot_text)
+            if not via_llm:
+                wav_cache.put(bot_text, wav)
         emote = classify_emote(bot_text)
         ok = reservation.commit(Utterance(
             wav=wav,

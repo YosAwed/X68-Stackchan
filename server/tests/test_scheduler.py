@@ -222,6 +222,32 @@ async def test_llm_triggers_are_not_pre_synthesized():
     await s.stop()
 
 
+@pytest.mark.asyncio
+async def test_disk_wav_cache_skips_tts_on_second_startup(tmp_path):
+    """WavCache が有効なら 2 回目の Scheduler.start() で TTS を呼ばない。"""
+    from wav_cache import WavCache
+    cache = WavCache(dir=tmp_path)
+
+    # 1 回目: TTS が呼ばれてディスクキャッシュに書く
+    tts1 = FakeTTS()
+    s1 = Scheduler(FakeLLM(), tts1, UtteranceQueue(4), wav_cache=cache)
+    s1.triggers.append(ScheduledTrigger(name="fx", cron="0 4 * 1 *",
+                                        kind="fixed", text="お昼だよ"))
+    await s1.start()
+    assert tts1.calls == ["お昼だよ"]
+    await s1.stop()
+
+    # 2 回目: 新しい Scheduler (= サーバ再起動相当) でも TTS は呼ばれない
+    tts2 = FakeTTS()
+    s2 = Scheduler(FakeLLM(), tts2, UtteranceQueue(4), wav_cache=cache)
+    s2.triggers.append(ScheduledTrigger(name="fx", cron="0 4 * 1 *",
+                                        kind="fixed", text="お昼だよ"))
+    await s2.start()
+    assert tts2.calls == []
+    assert s2.triggers[0]._cached_wav is not None
+    await s2.stop()
+
+
 # ---------------------- due() boundary ----------------------
 
 
