@@ -24,6 +24,7 @@
 #include "rgb_controller.h"
 #include "touch_handler.h"
 #include "imu_handler.h"
+#include "remote_handler.h"
 
 using namespace stackchan;
 
@@ -44,6 +45,7 @@ static RgbController   g_rgb;
 #endif
 static TouchHandler    g_touch;
 static ImuHandler      g_imu;
+static RemoteHandler   g_remote;
 
 static void clearSideStatus() {
     const int dx = (M5.Display.width() - PekekoFace::kSize) / 2;
@@ -280,6 +282,8 @@ void setup() {
         g_face.show(faces::FACE_ERR_WIFI);
         return;
     }
+    g_remote.begin();
+
     ReadyResponse ready = ChatClient::ready();
     if (!ready.ok) {
         showReadyError(ready);
@@ -295,7 +299,8 @@ void setup() {
 void loop() {
     M5.update();
 
-    const bool pressed = M5.BtnA.isPressed();
+    const bool pressed          = M5.BtnA.isPressed();
+    const bool remote_ptt_edge  = g_remote.btnAEdge();  // call every frame for edge tracking
 
     switch (g_state) {
         case State::Idle: {
@@ -337,10 +342,23 @@ void loop() {
                 g_reaction_end_ms = millis() + 1500;
             }
 
-            if (!pressed) {
+            // リモコン: ジョイスティックでサーボ手動操作
+#if SERVO_ENABLED
+            if (g_remote.isConnected()) {
+                const float yaw   = g_remote.yawNorm();
+                const float pitch = g_remote.pitchNorm();
+                if (yaw != 0.0f || pitch != 0.0f) {
+                    g_servo.setTarget(yaw, -pitch, ServoController::LERP_FAST);
+                }
+            }
+#endif
+
+            if (!pressed && !g_remote.btnA()) {
                 g_wait_release_after_auto_send = false;
             }
-            if (pressed && !g_wait_release_after_auto_send && g_reaction_end_ms == 0) {
+            // ローカルボタン または リモコン BtnA エッジで録音開始
+            if ((pressed || remote_ptt_edge) &&
+                !g_wait_release_after_auto_send && g_reaction_end_ms == 0) {
                 g_rec.start();
                 setState(State::Listening, faces::FACE_LISTENING);
             }
@@ -351,7 +369,8 @@ void loop() {
             g_rec.poll();
             drawMicLevel(g_rec.lastPeak(), g_rec.lastRms());
             const bool rec_overflow = g_rec.isFull();
-            if (!pressed || rec_overflow) {
+            // ローカルボタンもリモコンボタンも離されたら送信
+            if ((!pressed && !g_remote.btnA()) || rec_overflow) {
                 if (rec_overflow) {
                     Serial.printf("[REC ] Buffer full (%us): auto-sending\n",
                                   (unsigned)MAX_REC_SECONDS);
