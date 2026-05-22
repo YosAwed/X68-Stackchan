@@ -75,7 +75,8 @@ inline constexpr int FACE_ERR_SERVER    = F_DIZZY;       // 5xx: サーバ内部
 inline constexpr int FACE_ERR_TIMEOUT   = F_BORED;       // 接続失敗/タイムアウト
 inline constexpr int FACE_REC_OVERFLOW  = F_SURPRISED;   // 録音上限到達
 // インタラクション
-inline constexpr int FACE_PET           = F_BASHFUL;     // なでなで → はにかみ
+inline constexpr int FACE_PET           = F_BASHFUL;     // なでなで (ホールド) → はにかみ
+inline constexpr int FACE_SWIPE         = F_JOY;         // スワイプ撫で → 喜び (目閉じ口開け)
 inline constexpr int FACE_SHAKEN        = F_DIZZY;       // シェイク → 目回し
 
 } // namespace faces

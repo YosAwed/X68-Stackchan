@@ -20,7 +20,9 @@
 namespace stackchan {
 
 enum class RgbScene {
-    Idle, Listening, Thinking, Speaking, Pet, Shaken, Error, Off
+    Idle, Listening, Thinking, Speaking, Pet, Shaken, Error, Off,
+    AmbientIdle,  // 放置中の低頻度アンビエント演出
+    Swipe         // スワイプ撫での反応
 };
 
 class RgbController {
@@ -75,6 +77,8 @@ public:
             case RgbScene::Pet:       animPet(dt);       break;
             case RgbScene::Shaken:    animShaken(dt);    break;
             case RgbScene::Error:     animError(dt);     break;
+            case RgbScene::AmbientIdle: animAmbientIdle(dt); break;
+            case RgbScene::Swipe:       animSwipe(dt);       break;
             case RgbScene::Off:
                 fill_solid(leds_, RGB_NUM_LEDS, CRGB::Black);
                 break;
@@ -84,18 +88,54 @@ public:
 
 private:
     CRGB     leds_[RGB_NUM_LEDS];
-    RgbScene scene_    = RgbScene::Off;
-    uint32_t scene_ms_ = 0;
-    float    speak_rms_ = 0.0f;
+    RgbScene scene_      = RgbScene::Off;
+    uint32_t scene_ms_   = 0;
+    float    speak_rms_  = 0.0f;
+    uint8_t  ambient_hue_ = 80;  // 現在のアンビエント色相 (非赤系, 30-199)
+
+    static constexpr uint32_t AMBIENT_INTERVAL_MS = 180000; // 3 分放置でアンビエント開始
+    static constexpr uint32_t AMBIENT_DURATION_MS  = 20000; // アンビエント継続時間 20 秒
 
     // ---- アニメーション ----------------------------------------
 
     void animIdle(uint32_t dt) {
+        // 3 分放置でランダム非赤色アンビエントへ遷移
+        if (dt >= AMBIENT_INTERVAL_MS) {
+            ambient_hue_ = (uint8_t)(30 + rand() % 170);  // 30-199: 黄〜青紫 (赤除外)
+            scene_    = RgbScene::AmbientIdle;
+            scene_ms_ = millis();
+            return;
+        }
         // 青紫ブリージング: 4秒周期
         float t   = (float)(dt % 4000) / 4000.0f;
         uint8_t v = (uint8_t)(sinf(t * 2.0f * M_PI) * 50.0f + 70.0f);
         uint8_t h = (uint8_t)(170 + (int)(sinf(t * M_PI) * 15));
         fill_solid(leds_, RGB_NUM_LEDS, CHSV(h, 210, v));
+    }
+
+    void animAmbientIdle(uint32_t dt) {
+        // 20 秒経過したら通常 Idle に戻す
+        if (dt >= AMBIENT_DURATION_MS) {
+            scene_    = RgbScene::Idle;
+            scene_ms_ = millis();
+            return;
+        }
+        // ランダム色でゆっくり明滅 (3 秒周期)
+        float t   = (float)(dt % 3000) / 3000.0f;
+        uint8_t v = (uint8_t)(sinf(t * 2.0f * (float)M_PI) * 55.0f + 65.0f);
+        fill_solid(leds_, RGB_NUM_LEDS, CHSV(ambient_hue_, 220, v));
+    }
+
+    void animSwipe(uint32_t dt) {
+        // 黄色バースト → 1.5 秒でフェードアウト
+        uint8_t v;
+        if (dt < 150) {
+            v = 220;  // 最初の 150ms は全開輝度
+        } else {
+            float ratio = 1.0f - constrain((float)(dt - 150) / 1350.0f, 0.0f, 1.0f);
+            v = (uint8_t)(ratio * 220.0f);
+        }
+        fill_solid(leds_, RGB_NUM_LEDS, CHSV(52, 200, v));
     }
 
     void animListening(uint32_t dt) {

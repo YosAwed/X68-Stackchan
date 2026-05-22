@@ -313,17 +313,32 @@ void loop() {
 #endif
             }
 
-            // なでなで検出 (リアクション中は無視)
-            if (g_reaction_end_ms == 0 && g_touch.update()) {
-                g_face.show(faces::FACE_PET);
+            // タッチ検出 (スワイプ優先, リアクション中は無視)
+            if (g_reaction_end_ms == 0) {
+                const auto touch_ev = g_touch.update();
+                if (touch_ev == TouchHandler::Event::Swipe) {
+                    // スワイプ: 喜び表情 + 首振りアニメーション
+                    g_face.show(faces::FACE_SWIPE);
 #if RGB_ENABLED
-                g_rgb.setScene(RgbScene::Pet);
+                    g_rgb.setScene(RgbScene::Swipe);
 #endif
 #if SERVO_ENABLED
-                g_servo.setTarget(0.0f, 0.3f, ServoController::LERP_FAST);
+                    g_servo.startHappyWaggle();
 #endif
-                playAckBeep();
-                g_reaction_end_ms = millis() + 2000;
+                    playAckBeep();
+                    g_reaction_end_ms = millis() + 2500;
+                } else if (touch_ev == TouchHandler::Event::Pet) {
+                    // ホールドなでなで: はにかみ表情 + 上向きチルト
+                    g_face.show(faces::FACE_PET);
+#if RGB_ENABLED
+                    g_rgb.setScene(RgbScene::Pet);
+#endif
+#if SERVO_ENABLED
+                    g_servo.setTarget(0.0f, 0.3f, ServoController::LERP_FAST);
+#endif
+                    playAckBeep();
+                    g_reaction_end_ms = millis() + 2000;
+                }
             }
 
             // シェイク検出 (リアクション中は無視)
