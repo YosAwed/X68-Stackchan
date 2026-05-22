@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from collections import OrderedDict, deque
 from typing import Deque, Dict, List
 
@@ -38,6 +39,7 @@ class LLM:
         self._client = httpx.Client(base_url=self.host, timeout=timeout_s)
         # {sid: deque[(role, content)]}  role in {"user", "assistant"}
         self._history: Dict[str, Deque[tuple[str, str]]] = OrderedDict()
+        self._history_lock = threading.RLock()
         # 永続化が有効な場合のみ SQLite ストアを開き、起動時に既存履歴をハイドレート。
         self._store: HistoryStore | None = None
         if history_db:
@@ -55,20 +57,18 @@ class LLM:
                      len(self._history), history_db)
 
     def chat(self, session_id: str, user_text: str) -> str:
-        hist = self._history.get(session_id)
-        if hist is None:
-            hist = deque(maxlen=self.history_turns * 2)
-            self._history[session_id] = hist
-        elif isinstance(self._history, OrderedDict):
-            self._history.move_to_end(session_id)
-        while len(self._history) > self.max_sessions:
-            dropped, _ = self._history.popitem(last=False)
-            log.info("LLM dropped old session history: %s", dropped)
-            if self._store is not None:
-                self._store.reset(dropped)
+        with self._history_lock:
+            hist = self._history.get(session_id)
+            if hist is None:
+                hist = deque(maxlen=self.history_turns * 2)
+                self._history[session_id] = hist
+            elif isinstance(self._history, OrderedDict):
+                self._history.move_to_end(session_id)
+
+            history_snapshot = list(hist)
 
         messages: List[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
-        for role, content in hist:
+        for role, content in history_snapshot:
             messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": user_text})
 
@@ -88,12 +88,26 @@ class LLM:
         bot_text = data["message"]["content"].strip()
         log.info("LLM ◀ %r", bot_text)
 
-        hist.append(("user", user_text))
-        hist.append(("assistant", bot_text))
+        dropped_sids: list[str] = []
+        with self._history_lock:
+            hist = self._history.get(session_id)
+            if hist is None:
+                hist = deque(maxlen=self.history_turns * 2)
+                self._history[session_id] = hist
+            elif isinstance(self._history, OrderedDict):
+                self._history.move_to_end(session_id)
+            hist.append(("user", user_text))
+            hist.append(("assistant", bot_text))
+            while len(self._history) > self.max_sessions:
+                dropped, _ = self._history.popitem(last=False)
+                dropped_sids.append(dropped)
+                log.info("LLM dropped old session history: %s", dropped)
+
         if self._store is not None:
             try:
-                self._store.append(session_id, "user", user_text)
-                self._store.append(session_id, "assistant", bot_text)
+                self._store.append_turn(session_id, user_text, bot_text)
+                for dropped in dropped_sids:
+                    self._store.reset(dropped)
             except Exception:
                 # 永続化失敗は致命的でない (in-memory 履歴は更新済み)
                 log.exception("history_store append failed (sid=%s)", session_id)
@@ -111,7 +125,7 @@ class LLM:
                 "model": self.model,
                 "temperature": self.temperature,
                 "num_predict": self.num_predict,
-                "sessions": len(self._history),
+                "sessions": self._session_count(),
                 "max_sessions": self.max_sessions,
                 "persistent": self._store is not None,
                 "available_models": sorted(n for n in names if n),
@@ -121,13 +135,18 @@ class LLM:
                 "ok": False,
                 "host": self.host,
                 "model": self.model,
-                "sessions": len(self._history),
+                "sessions": self._session_count(),
                 "max_sessions": self.max_sessions,
                 "persistent": self._store is not None,
                 "error": str(e),
             }
 
     def reset(self, session_id: str) -> None:
-        self._history.pop(session_id, None)
+        with self._history_lock:
+            self._history.pop(session_id, None)
         if self._store is not None:
             self._store.reset(session_id)
+
+    def _session_count(self) -> int:
+        with self._history_lock:
+            return len(self._history)

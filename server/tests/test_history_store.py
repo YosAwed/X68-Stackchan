@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
-
 from history_store import HistoryStore
 
 
@@ -62,6 +62,22 @@ def test_reject_invalid_role(tmp_path: Path):
     s = HistoryStore(tmp_path / "h.sqlite")
     with pytest.raises(ValueError):
         s.append("x", "system", "should not be stored here")
+
+
+def test_append_turn_is_safe_across_threads(tmp_path: Path):
+    s = HistoryStore(tmp_path / "h.sqlite")
+
+    def write_turn(i: int) -> None:
+        s.append_turn("shared", f"u{i}", f"a{i}", ts=float(i))
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(write_turn, range(50)))
+
+    rows = s.load("shared", max_turns=50)
+    assert len(rows) == 100
+    for i in range(50):
+        assert rows[i * 2] == ("user", f"u{i}")
+        assert rows[i * 2 + 1] == ("assistant", f"a{i}")
 
 
 def test_trim_to_max_sessions(tmp_path: Path):

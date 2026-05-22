@@ -26,7 +26,7 @@ M5Stack 公式スタックちゃん (CoreS3 SE) を、X68000 擬人化キャラ 
 初めて触るときは下の順に確かめると詰まりにくい (詳細は [docs/setup.md §3](docs/setup.md#3-動作確認-段階的に切り分ける) に同じ内容で展開)。
 
 1. **顔画像表示の確認** — 母艦サーバ無しで CoreS3 だけ電源 ON。スプラッシュと face_01 が出れば、ファーム本体 + LittleFS の表情画像 + サーボは OK
-2. **母艦サーバへの到達確認** — uvicorn を起こした状態でシリアルログに `WiFi connected` と `/pull` の応答が出ることを見る。母艦から `POST /enqueue` を投げれば CoreS3 が喋る
+2. **母艦サーバへの到達確認** — uvicorn を起こした状態でシリアルログに `WiFi connected` と `/pull` の応答が出ることを見る。母艦から `X-Stackchan-Token` 付きで `POST /enqueue` を投げれば CoreS3 が喋る
 3. **会話 (push-to-talk)** — ボタン長押し → 録音 → STT → LLM → TTS が往復する
 
 ## 構成
@@ -49,7 +49,7 @@ M5Stack 公式スタックちゃん (CoreS3 SE) を、X68000 擬人化キャラ 
 
 - 通常会話は CoreS3 → 母艦の **要求-応答** (`POST /chat`)
 - 定期発話 / 外部 push は母艦 → CoreS3 を **long-poll** で実現 (`GET /pull`、CoreS3 が Idle 中に短ポーリング)
-- 外部システム (Discord bot / curl など) からは `POST /enqueue` で同じキューに発話を積める
+- 外部システム (Discord bot / curl など) からは `X-Stackchan-Token` 付きの `POST /enqueue` で同じキューに発話を積める
 
 ## ディレクトリ
 

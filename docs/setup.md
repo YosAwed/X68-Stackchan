@@ -205,7 +205,7 @@ pio device monitor -e m5stack-cores3
 - ❌ `WiFi connect failed` → `config.h` の SSID/PASS、2.4GHz 帯か
 - ❌ `[PULL] http err` → `config.h` の `SERVER_HOST` が母艦の LAN IP になっているか、母艦のファイアウォールで 8000 が開いているか
 
-母艦側で `curl -X POST -F "text=テスト" http://localhost:8000/enqueue` を実行すれば CoreS3 が次の `/pull` で発話する。経路全体 (Wi-Fi → HTTP → TTS → CoreS3 で再生) の疎通確認に使える。
+母艦側で `curl -X POST -H "X-Stackchan-Token: $ENQUEUE_TOKEN" -F "text=テスト" http://localhost:8000/enqueue` を実行すれば CoreS3 が次の `/pull` で発話する。`ENQUEUE_TOKEN` は `server/.env` に設定した値を使う。経路全体 (Wi-Fi → HTTP → TTS → CoreS3 で再生) の疎通確認に使える。
 
 ### ステップ 3: 会話 (push-to-talk)
 
