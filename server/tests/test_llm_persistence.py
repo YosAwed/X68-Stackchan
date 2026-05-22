@@ -114,6 +114,51 @@ def test_chat_injects_time_context_as_second_system_message(
     assert "前回の会話" not in ctx
 
 
+def test_chat_includes_time_of_day_flavor_by_default(
+    tmp_path: Path, fake_ollama_response, monkeypatch
+):
+    """LLM_TIME_FLAVOR がデフォルト (=1) なら 3 つ目の system message にヒントが乗る。"""
+    monkeypatch.delenv("LLM_TIME_FLAVOR", raising=False)
+    llm = _make_llm(tmp_path, persistent=False)
+    captured: dict = {}
+
+    def fake_post(url, json):
+        captured["payload"] = json
+        return fake_ollama_response
+
+    with patch.object(llm._client, "post", side_effect=fake_post):
+        llm.chat("alice", "やあ")
+
+    msgs = captured["payload"]["messages"]
+    # 0: persona, 1: time context, 2: time-of-day flavor (時刻による)
+    # 時間帯フレーバは 0-24 時の全帯域でカバーされているはずなので必ず付く
+    assert len(msgs) >= 3
+    assert msgs[2]["role"] == "system"
+    assert msgs[2]["content"].startswith("[気分のヒント:")
+
+
+def test_chat_skips_time_of_day_flavor_when_disabled(
+    tmp_path: Path, fake_ollama_response, monkeypatch
+):
+    """LLM_TIME_FLAVOR=0 でフレーバは付かず、最初のユーザ msg がすぐ来る。"""
+    monkeypatch.setenv("LLM_TIME_FLAVOR", "0")
+    llm = _make_llm(tmp_path, persistent=False)
+    captured: dict = {}
+
+    def fake_post(url, json):
+        captured["payload"] = json
+        return fake_ollama_response
+
+    with patch.object(llm._client, "post", side_effect=fake_post):
+        llm.chat("alice", "やあ")
+
+    msgs = captured["payload"]["messages"]
+    # フレーバが抑制されると msgs = [persona, time, user] の 3 件で済む
+    assert len(msgs) == 3
+    assert msgs[2]["role"] == "user"
+    assert "気分のヒント" not in msgs[1]["content"]
+
+
 def test_chat_includes_last_interaction_when_persistent(
     tmp_path: Path, fake_ollama_response
 ):

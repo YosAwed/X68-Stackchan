@@ -55,6 +55,31 @@ def _build_time_context(last_ts: float | None) -> str:
         parts.append(f"前回の会話: {_format_jp_duration(elapsed)}")
     return "[" + "  ".join(parts) + "]"
 
+
+# 時間帯ごとの「気分のフレーバ」。空文字なら系列を省略する。
+# 「[気分のヒント: ...]」として system message に渡し、LLM に乗せる。
+# 細かいセリフは指示しない — 雰囲気だけ示してキャラに任せる方が破綻しにくい。
+_TIME_OF_DAY_FLAVORS: list[tuple[int, int, str]] = [
+    (0,  5,  "深夜なので小声で、少し眠そう、ぼそぼそ気味の雰囲気"),
+    (5,  9,  "早朝で、まだ目覚めきれてない感じ。あくび混じりに短く"),
+    (9,  12, "午前で元気めの調子。テンポ良く、軽快に"),
+    (12, 14, "お昼時。お腹空いてる感を少し滲ませても OK"),
+    (14, 17, "午後の眠気がじわっと来る時間。ちょっとぼんやり目"),
+    (17, 21, "夕方〜夜の入り口。落ち着いた声色、リラックスしてる雰囲気"),
+    (21, 24, "夜遅め。ふんわり眠そう、しっとり目の雰囲気"),
+]
+
+
+def _time_of_day_hint(now: datetime | None = None) -> str:
+    """現在時刻の時間帯フレーバ文字列。当てはまらない場合は空文字。"""
+    if now is None:
+        now = datetime.now()
+    h = now.hour
+    for lo, hi, flavor in _TIME_OF_DAY_FLAVORS:
+        if lo <= h < hi:
+            return f"[気分のヒント: {flavor}]"
+    return ""
+
 log = logging.getLogger(__name__)
 
 
@@ -116,6 +141,12 @@ class LLM:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "system", "content": time_ctx},
         ]
+        # 3 つ目: 時間帯ごとの気分フレーバ。空文字なら付けない (LLM への
+        # ノイズを増やさない)。env で無効化したい場合 LLM_TIME_FLAVOR=0。
+        if os.getenv("LLM_TIME_FLAVOR", "1") == "1":
+            flavor = _time_of_day_hint()
+            if flavor:
+                messages.append({"role": "system", "content": flavor})
         for role, content in history_snapshot:
             messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": user_text})

@@ -31,6 +31,7 @@ from urllib.parse import quote
 
 from dotenv import load_dotenv
 from emote import classify as classify_emote
+from emote import classify_reaction
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, Response
 from llm import LLM
@@ -137,17 +138,20 @@ def _wav_response(
     bot_text: str,
     timings: dict[str, float],
 ) -> Response:
+    # ユーザ発話に褒め言葉が含まれていれば embarrassed (はにかみ) に倒す。
+    # 無い時は通常通り bot_text を分類。
+    emote = classify_reaction(user_text or "", bot_text)
     headers = {
         "X-Stackchan-Bot-Text": quote(bot_text),
         "X-Stackchan-Timing": _timing_header(timings),
         "X-Stackchan-TTS-Backend": os.getenv("TTS_BACKEND", "irodori"),
         # CoreS3 側で口パク用の表情ペアを切り替えるためのヒント。
         # neutral/joy/sad/embarrassed/confused/surprised/sleepy/confident の英小文字。
-        "X-Stackchan-Emote": classify_emote(bot_text),
+        "X-Stackchan-Emote": emote,
     }
     if user_text is not None:
         headers["X-Stackchan-User-Text"] = quote(user_text)
-    log.info("timing %s emote=%s", headers["X-Stackchan-Timing"], headers["X-Stackchan-Emote"])
+    log.info("timing %s emote=%s", headers["X-Stackchan-Timing"], emote)
     return Response(content=wav, media_type="audio/wav", headers=headers)
 
 

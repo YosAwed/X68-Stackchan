@@ -208,6 +208,26 @@ def test_enqueue_returns_503_when_queue_full(client, app_with_fakes):
     assert r.status_code == 503
 
 
+# ---------------- /chat_text emote reactions ----------------
+
+
+def test_chat_text_returns_embarrassed_when_user_praises(client):
+    """ユーザが「かわいい」と言ったら、bot_text の内容に関わらず
+    X-Stackchan-Emote=embarrassed (はにかむ)。"""
+    r = client.post("/chat_text", data={"text": "かわいいね、ぺけ子ちゃん"})
+    assert r.status_code == 200
+    assert r.headers["x-stackchan-emote"] == "embarrassed"
+
+
+def test_chat_text_emote_follows_bot_text_when_no_praise(client):
+    """褒めない普通の質問では bot_text の分類が反映される。"""
+    # FakeLLM は "echo:..." を返すので、text が joy 系なら echo も joy
+    r = client.post("/chat_text", data={"text": "X68 が好きなんだ"})
+    assert r.status_code == 200
+    # echo:X68 が好きなんだ → joy
+    assert r.headers["x-stackchan-emote"] == "joy"
+
+
 # ---------------- /scheduler/status ----------------
 
 

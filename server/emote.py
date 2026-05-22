@@ -87,3 +87,38 @@ def classify(text: str) -> str:
             if kw.lower() in lowered:
                 return category
     return "neutral"
+
+
+# 「ユーザがぺけ子ちゃんを褒めた」を拾うためのキーワード。
+# bot 自身が言うのではなく、user_text にこれらが現れたら次の応答は
+# 「はにかむ」 = embarrassed として表情を上書きする。
+_PRAISE_KEYWORDS: tuple[str, ...] = (
+    "かわいい", "可愛い", "カワイイ",
+    "えらい", "偉い",
+    "すごい", "すっごい", "凄い", "スゴい",
+    "好きだよ", "好きだ", "大好き",
+    "賢い", "かしこい",
+    "ありがとう", "ありがと",
+    "助かった", "助かる",
+    "上手", "じょうず", "うまい", "うまかった",
+    "天才", "てんさい",
+)
+
+
+def is_praise(user_text: str) -> bool:
+    """user_text に褒め系の語が含まれているか。"""
+    if not user_text:
+        return False
+    lowered = user_text.lower()
+    return any(kw.lower() in lowered for kw in _PRAISE_KEYWORDS)
+
+
+def classify_reaction(user_text: str, bot_text: str) -> str:
+    """ユーザ発話とぺけ子応答の両方を見て表情カテゴリを決める。
+
+    user_text に褒め言葉があれば、bot_text の内容に関わらず
+    "embarrassed" (はにかむ) に倒す。それ以外は通常の classify(bot_text)。
+    """
+    if is_praise(user_text):
+        return "embarrassed"
+    return classify(bot_text)
