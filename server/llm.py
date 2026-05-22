@@ -7,13 +7,53 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
+import time
 from collections import OrderedDict, deque
+from datetime import datetime
 from typing import Deque, Dict, List
 
 import httpx
 from history_store import HistoryStore
 from persona import SYSTEM_PROMPT
+
+_WEEKDAY_JA = ("月", "火", "水", "木", "金", "土", "日")
+
+
+def _format_jp_duration(seconds: float) -> str:
+    """秒を「3 時間 12 分前」のような短い和文へ。"""
+    s = max(0.0, seconds)
+    if s < 60:
+        return "ついさっき"
+    minutes = int(s // 60)
+    if minutes < 60:
+        return f"{minutes} 分前"
+    hours = minutes // 60
+    rem_min = minutes % 60
+    if hours < 24:
+        if rem_min == 0:
+            return f"{hours} 時間前"
+        return f"{hours} 時間 {rem_min} 分前"
+    days = hours // 24
+    rem_hr = hours % 24
+    if rem_hr == 0:
+        return f"{days} 日前"
+    return f"{days} 日 {rem_hr} 時間前"
+
+
+def _build_time_context(last_ts: float | None) -> str:
+    """LLM に渡す time-context 文字列を組み立てる。
+
+    例: `[現在時刻: 2026-05-22 (木) 14:30  前回の会話: 3 時間 12 分前]`
+    """
+    now = datetime.now()
+    weekday = _WEEKDAY_JA[now.weekday()]
+    parts = [f"現在時刻: {now.strftime('%Y-%m-%d')} ({weekday}) {now.strftime('%H:%M')}"]
+    if last_ts is not None:
+        elapsed = max(0.0, time.time() - last_ts)
+        parts.append(f"前回の会話: {_format_jp_duration(elapsed)}")
+    return "[" + "  ".join(parts) + "]"
 
 log = logging.getLogger(__name__)
 
@@ -67,7 +107,15 @@ class LLM:
 
             history_snapshot = list(hist)
 
-        messages: List[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        # 時間文脈を 2 つめの system message として注入。SYSTEM_PROMPT は不変
+        # のままなので、Ollama 側のプロンプトキャッシュは効いたままになる。
+        last_ts = (self._store.last_ts(session_id)
+                   if self._store is not None else None)
+        time_ctx = _build_time_context(last_ts)
+        messages: List[dict] = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": time_ctx},
+        ]
         for role, content in history_snapshot:
             messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": user_text})

@@ -304,3 +304,86 @@ async def test_stop_cancels_running_loop():
     # すぐ stop してもデッドロックしない
     await asyncio.wait_for(s.stop(), timeout=2.0)
     assert s._task is None
+
+
+# ---------------------- silent_for_minutes ----------------------
+
+
+@pytest.mark.asyncio
+async def test_silent_trigger_fires_when_user_has_been_silent(tmp_path):
+    """指定 sid が silent_for_minutes 以上沈黙していれば発火する。"""
+    import time
+    from history_store import HistoryStore
+
+    store = HistoryStore(tmp_path / "h.sqlite")
+    # 2 時間前の発話 = 「沈黙が続いている」
+    store.append("stackchan-01", "user", "おはよう", ts=time.time() - 7200)
+
+    s = Scheduler(FakeLLM(), FakeTTS(), UtteranceQueue(4), history_store=store)
+    t = ScheduledTrigger(name="miss_you", cron="* * * * *",
+                         kind="fixed", text="お、また来た",
+                         silent_for_minutes=60.0)  # 1 時間沈黙で発火
+    await s._fire(t)
+    # 沈黙 2 時間 > 閾値 60 分なので発火している
+    assert t.fire_count == 1
+    assert s.queue.size() == 1
+
+
+@pytest.mark.asyncio
+async def test_silent_trigger_skips_when_user_active(tmp_path):
+    """sid が直近に発話していれば skip。"""
+    import time
+    from history_store import HistoryStore
+
+    store = HistoryStore(tmp_path / "h.sqlite")
+    # 5 分前の発話 = まだアクティブ
+    store.append("stackchan-01", "user", "やっほー", ts=time.time() - 300)
+
+    s = Scheduler(FakeLLM(), FakeTTS(), UtteranceQueue(4), history_store=store)
+    t = ScheduledTrigger(name="miss_you", cron="* * * * *",
+                         kind="fixed", text="お、また来た",
+                         silent_for_minutes=60.0)
+    await s._fire(t)
+    # まだアクティブなので skip
+    assert t.fire_count == 0
+    assert s.queue.size() == 0
+
+
+@pytest.mark.asyncio
+async def test_silent_trigger_fires_when_no_history_exists(tmp_path):
+    """履歴ゼロは「沈黙そのもの」とみなして発火する。"""
+    from history_store import HistoryStore
+
+    store = HistoryStore(tmp_path / "h.sqlite")
+    s = Scheduler(FakeLLM(), FakeTTS(), UtteranceQueue(4), history_store=store)
+    t = ScheduledTrigger(name="miss_you", cron="* * * * *",
+                         kind="fixed", text="誰かいるかな",
+                         silent_for_minutes=60.0)
+    await s._fire(t)
+    assert t.fire_count == 1
+
+
+@pytest.mark.asyncio
+async def test_silent_trigger_fires_when_no_history_store():
+    """history_store を渡していない時は silent 条件無視で常に発火。"""
+    s = Scheduler(FakeLLM(), FakeTTS(), UtteranceQueue(4))  # history_store なし
+    t = ScheduledTrigger(name="x", cron="* * * * *",
+                         kind="fixed", text="hi",
+                         silent_for_minutes=60.0)
+    await s._fire(t)
+    assert t.fire_count == 1
+
+
+def test_status_exposes_silent_fields():
+    """status() に silent_for_minutes / check_sid が出ること。"""
+    s = Scheduler(FakeLLM(), FakeTTS(), UtteranceQueue(4))
+    s.triggers.append(ScheduledTrigger(
+        name="a", cron="* * * * *", kind="fixed", text="x"))
+    s.triggers.append(ScheduledTrigger(
+        name="b", cron="* * * * *", kind="fixed", text="y",
+        silent_for_minutes=30.0, check_sid="user-42"))
+    st = s.status()
+    assert st["triggers"][0]["silent_for_minutes"] is None
+    assert st["triggers"][0]["check_sid"] is None  # silent 条件無しなら null
+    assert st["triggers"][1]["silent_for_minutes"] == 30.0
+    assert st["triggers"][1]["check_sid"] == "user-42"

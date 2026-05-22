@@ -26,6 +26,15 @@
       "kind": "llm",
       "prompt": "そろそろ寝る時間。X68 関連の小ネタを一言挨拶代わりに",
       "sid": "scheduled"
+    },
+    {
+      "name": "miss_you",
+      "cron": "*/30 * * * *",
+      "kind": "llm",
+      "prompt": "しばらく話しかけてもらえてない。寂しがる雰囲気で一言、軽く呼びかけてみて",
+      "sid": "scheduled",
+      "silent_for_minutes": 180,
+      "check_sid": "stackchan-01"
     }
   ]
 }

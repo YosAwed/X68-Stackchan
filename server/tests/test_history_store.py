@@ -104,6 +104,17 @@ def test_reset_specific_sid(tmp_path: Path):
     assert s.load("bob", 4) == [("user", "yo")]
 
 
+def test_last_ts_returns_max_timestamp(tmp_path: Path):
+    s = HistoryStore(tmp_path / "h.sqlite")
+    assert s.last_ts("nobody") is None
+    s.append("alice", "user", "hi", ts=100.0)
+    s.append("alice", "assistant", "yes", ts=200.5)
+    s.append("alice", "user", "more", ts=300.25)
+    assert s.last_ts("alice") == 300.25
+    # 他 sid は影響を受けない
+    assert s.last_ts("bob") is None
+
+
 def test_in_memory_db_works():
     s = HistoryStore(":memory:")
     s.append("alice", "user", "hi")

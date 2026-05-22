@@ -103,7 +103,13 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_prewarm_tts())
     if os.getenv("SCHEDULE_ENABLED", "0") == "1":
         path = Path(os.getenv("SCHEDULE_FILE", "schedule.json"))
-        _scheduler = Scheduler.from_file(path, llm, tts, queue, wav_cache=wav_cache)
+        # silent_for_minutes 条件付きトリガが LLM の履歴 DB を参照できるように、
+        # LLM が永続化を有効にしている時だけ history_store を Scheduler に渡す。
+        _scheduler = Scheduler.from_file(
+            path, llm, tts, queue,
+            wav_cache=wav_cache,
+            history_store=getattr(llm, "_store", None),
+        )
         await _scheduler.start()
     else:
         log.info("scheduler disabled (set SCHEDULE_ENABLED=1 to enable)")

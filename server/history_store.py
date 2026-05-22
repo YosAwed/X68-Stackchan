@@ -111,6 +111,16 @@ class HistoryStore:
                 "SELECT sid FROM messages GROUP BY sid ORDER BY MAX(ts) DESC")
             return [row[0] for row in cur.fetchall()]
 
+    def last_ts(self, sid: str) -> float | None:
+        """sid の直近メッセージの epoch 秒。履歴ゼロなら None。"""
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT MAX(ts) FROM messages WHERE sid=?", (sid,))
+            row = cur.fetchone()
+        if row is None or row[0] is None:
+            return None
+        return float(row[0])
+
     def trim_to_max_sessions(self, max_sessions: int) -> int:
         """最終発話時刻の古い sid を捨てて max_sessions に揃える。
         戻り値は削除した sid 数。"""

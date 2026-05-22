@@ -18,8 +18,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import time
+
 from croniter import croniter
 from emote import classify as classify_emote
+from history_store import HistoryStore
 from utterance_queue import Utterance, UtteranceQueue
 from wav_cache import WavCache
 
@@ -34,6 +37,13 @@ class ScheduledTrigger:
     sid: str = "scheduled"
     prompt: str | None = None    # kind="llm" のみ
     text: str | None = None      # kind="fixed" のみ
+
+    # 「ユーザが直近 N 分以上話しかけていない」場合だけ発火する条件。
+    # None なら常に発火 (= 普通の cron トリガ)。
+    silent_for_minutes: float | None = None
+    # 沈黙判定の対象 sid (省略時は CoreS3 既定の "stackchan-01")。
+    # /chat の sid と一致させる。trigger.sid は LLM の人格セッションなので別物。
+    check_sid: str = "stackchan-01"
 
     # kind="fixed" の場合に事前合成した WAV を保持しておくキャッシュ。
     # text が不変なので Scheduler.start() で一度だけ合成し、以降の発火では
@@ -93,18 +103,23 @@ class Scheduler:
     POLL_INTERVAL_S = 30
 
     def __init__(self, llm, tts, queue: UtteranceQueue,
-                 wav_cache: WavCache | None = None):
+                 wav_cache: WavCache | None = None,
+                 history_store: HistoryStore | None = None):
         self.llm = llm
         self.tts = tts
         self.queue = queue
         self.wav_cache = wav_cache if wav_cache is not None else WavCache(dir=None)
+        # silent_for_minutes 条件付きトリガの判定に使う (なくても OK、
+        # その場合は silent_for_minutes は無効化されて常に発火)。
+        self.history_store = history_store
         self.triggers: list[ScheduledTrigger] = []
         self._task: asyncio.Task | None = None
 
     @classmethod
     def from_file(cls, path: Path, llm, tts, queue: UtteranceQueue,
-                  wav_cache: WavCache | None = None) -> "Scheduler":
-        s = cls(llm, tts, queue, wav_cache=wav_cache)
+                  wav_cache: WavCache | None = None,
+                  history_store: HistoryStore | None = None) -> "Scheduler":
+        s = cls(llm, tts, queue, wav_cache=wav_cache, history_store=history_store)
         if not path.exists():
             log.warning("schedule file not found: %s (scheduler will idle)", path)
             return s
@@ -122,6 +137,8 @@ class Scheduler:
                     sid=raw.get("sid", "scheduled"),
                     prompt=raw.get("prompt"),
                     text=raw.get("text"),
+                    silent_for_minutes=raw.get("silent_for_minutes"),
+                    check_sid=raw.get("check_sid", "stackchan-01"),
                 ))
             except Exception:
                 log.exception("skipping invalid trigger: %r", raw)
@@ -189,7 +206,25 @@ class Scheduler:
             log.info("scheduler loop cancelled")
             raise
 
+    def _should_fire(self, trig: ScheduledTrigger) -> bool:
+        """silent_for_minutes 条件を満たすか。条件無し or 履歴ストア無しなら常に True。"""
+        if trig.silent_for_minutes is None:
+            return True
+        if self.history_store is None:
+            # 永続化されていない環境では沈黙判定不能。conservative に「発火しない」よりは
+            # 「常に発火」のほうが運用ミスに気付きやすい (絶対消えないトリガが残る)。
+            return True
+        threshold_s = trig.silent_for_minutes * 60.0
+        last = self.history_store.last_ts(trig.check_sid)
+        if last is None:
+            return True  # 履歴ゼロ = 沈黙そのもの。発火する
+        return (time.time() - last) >= threshold_s
+
     async def _fire(self, trig: ScheduledTrigger):
+        if not self._should_fire(trig):
+            log.info("scheduler ▷ %s skipped (sid=%s active within %.0f min)",
+                     trig.name, trig.check_sid, float(trig.silent_for_minutes or 0))
+            return
         log.info("scheduler ▶ %s (kind=%s)", trig.name, trig.kind)
         reservation = self.queue.reserve_nowait()
         if reservation is None:
@@ -237,6 +272,10 @@ class Scheduler:
                         if t.last_fire else None
                     ),
                     "last_error": t.last_error,
+                    "silent_for_minutes": t.silent_for_minutes,
+                    "check_sid": (
+                        t.check_sid if t.silent_for_minutes is not None else None
+                    ),
                 }
                 for t in self.triggers
             ],
