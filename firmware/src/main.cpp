@@ -201,7 +201,7 @@ static bool connectWiFi() {
     return true;
 }
 
-// 応答 WAV を再生しながら、PCM の RMS で口パク (口閉/口開 2 フレーム)
+// 応答 WAV を再生しながら、PCM の RMS で口パク (口閉/口開/大開 3 段階)
 static void playWavWithLipsync(const uint8_t* wav, size_t size,
                                const char* emote = nullptr) {
     if (!wav || size < 44) return;
@@ -250,15 +250,19 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size,
     const uint32_t t0 = millis();
     M5.Speaker.playWav(wav, size);
 
-    constexpr int RMS_THRESH = 2200;            // 経験値: 大きすぎたら下げる
+    // 3 段階閾値: <LOW=口閉じ、<HIGH=口開け、>=HIGH=大開け (climax 音節)
+    // RMS_THRESH=2200 の旧運用と同等の頻度で open が出る帯域に挟む。
+    constexpr int RMS_LOW  = 1400;
+    constexpr int RMS_HIGH = 3500;
     int  last_face = -1;
     uint32_t last_update = 0;
 
-    // 発話中の (口開, 口閉) を emote タグに応じて決める。
-    // 未知 / 空 / nullptr なら既定の FACE_SPEAK_OPEN / FACE_SPEAK_CLOSED。
-    int face_open  = faces::FACE_SPEAK_OPEN;
+    // 発話中の (口閉, 口開, 大開) を emote タグに応じて決める。
+    // 未知 / 空 / nullptr なら neutral 既定 (closed=SMILE, open=DETERMINED, wide=JOY)。
     int face_close = faces::FACE_SPEAK_CLOSED;
-    faces::resolve_speak_pair(emote, face_open, face_close);
+    int face_open  = faces::FACE_SPEAK_OPEN;
+    int face_wide  = faces::FACE_SPEAK_WIDE;
+    faces::resolve_speak_triple(emote, face_close, face_open, face_wide);
 
     while (M5.Speaker.isPlaying()) {
         const uint32_t now = millis();
@@ -275,7 +279,9 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size,
                 sumsq += (int32_t)s * s;
             }
             const int rms = (hi > lo) ? (int)std::sqrt((double)sumsq / (hi - lo)) : 0;
-            const int next = (rms > RMS_THRESH) ? face_open : face_close;
+            const int next = (rms >= RMS_HIGH) ? face_wide
+                            : (rms >= RMS_LOW)  ? face_open
+                                                : face_close;
             if (next != last_face) {
                 g_face.show(next);
                 last_face = next;
