@@ -8,6 +8,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <M5Unified.h>
+#include <esp_random.h>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -46,6 +47,21 @@ static inline void scheduleNextBlink() {
     g_blink_started_ms = 0;
 }
 
+// ---- Idle 中のマイクロ表情 (気分のゆらぎ) ----
+// 8〜15 秒のランダム間隔で 5 種の表情を 800 ms 表示する。
+// blink と排他: 片方が動いている間は他方をトリガしない。
+static constexpr uint32_t MICRO_HOLD_MS = 800;
+static constexpr uint32_t MICRO_MIN_MS  = 8000;
+static constexpr uint32_t MICRO_MAX_MS  = 15000;
+static uint32_t g_next_micro_ms    = 0;
+static uint32_t g_micro_started_ms = 0;
+
+static inline void scheduleNextMicro() {
+    const uint32_t span = MICRO_MAX_MS - MICRO_MIN_MS;
+    g_next_micro_ms    = millis() + MICRO_MIN_MS + (uint32_t)(rand() % span);
+    g_micro_started_ms = 0;
+}
+
 static inline void updateIdleBlink() {
     const uint32_t now = millis();
     if (g_blink_started_ms != 0) {
@@ -55,9 +71,34 @@ static inline void updateIdleBlink() {
         }
         return;
     }
+    if (g_micro_started_ms != 0) return;   // マイクロ表情中はトリガしない
     if (now >= g_next_blink_ms) {
         g_face.show(faces::FACE_BLINK);
         g_blink_started_ms = now;
+    }
+}
+
+static inline void updateIdleMicro() {
+    const uint32_t now = millis();
+    if (g_micro_started_ms != 0) {
+        if (now - g_micro_started_ms >= MICRO_HOLD_MS) {
+            g_face.show(faces::FACE_IDLE);
+            scheduleNextMicro();
+        }
+        return;
+    }
+    if (g_blink_started_ms != 0) return;   // まばたき中はトリガしない
+    if (now >= g_next_micro_ms) {
+        static const int kMicroFaces[] = {
+            faces::F_SOFT_SMILE,
+            faces::F_SPARKLE_EYES,
+            faces::F_BASHFUL,
+            faces::F_BORED,
+            faces::F_YAWN_SMALL,
+        };
+        constexpr int kN = sizeof(kMicroFaces) / sizeof(kMicroFaces[0]);
+        g_face.show(kMicroFaces[rand() % kN]);
+        g_micro_started_ms = now;
     }
 }
 
@@ -81,11 +122,13 @@ static void setState(State s, int face_id = -1) {
     g_state = s;
     if (face_id > 0) g_face.show(face_id);
     clearSideStatus();
-    // Idle に入る時にまばたきタイマを初期化、Idle 以外に出る時は停止。
+    // Idle に入る時にまばたき/マイクロ表情タイマを初期化、Idle 以外に出る時は停止。
     if (s == State::Idle) {
         scheduleNextBlink();
+        scheduleNextMicro();
     } else {
         g_blink_started_ms = 0;
+        g_micro_started_ms = 0;
     }
 #if SERVO_ENABLED
     switch (s) {
@@ -314,6 +357,9 @@ void setup() {
 
     // 短いウェーブの後、Idle 表情へ
     delay(700);
+    const uint32_t seed = micros() ^ esp_random();
+    randomSeed(seed);
+    srand(seed);   // upstream の scheduleNextBlink が rand() を使う
     setState(State::Idle, faces::FACE_IDLE);
 }
 
@@ -323,11 +369,14 @@ void loop() {
     const bool pressed = M5.BtnA.isPressed();
 
     switch (g_state) {
-        case State::Idle:
+        case State::Idle: {
             if (!pressed) {
                 g_wait_release_after_auto_send = false;
             }
             if (pressed && !g_wait_release_after_auto_send) {
+                // 呼ばれて「ハッ」と気づく一瞬の驚き顔
+                g_face.show(faces::F_SURPRISED);
+                delay(150);
                 g_rec.start();
                 setState(State::Listening, faces::FACE_LISTENING);
                 break;
@@ -347,9 +396,11 @@ void loop() {
                     setState(State::Idle, faces::FACE_IDLE);
                 }
             }
-            // 何もない時はまばたきだけ刻む
+            // 何もない時はまばたき + マイクロ表情を刻む
             updateIdleBlink();
+            updateIdleMicro();
             break;
+        }
 
         case State::Listening: {
             g_rec.poll();

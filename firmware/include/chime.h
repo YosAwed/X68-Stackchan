@@ -41,12 +41,13 @@ inline void playBootChime() {
     detail::playSequence(kBootSeq, sizeof(kBootSeq)/sizeof(kBootSeq[0]));
 }
 
-// 応答音声を流す直前。短い "ピッ" を入れて喋り始めることを予告する。
+// 応答音声を流す直前。"ピロン♪" の 2 音で喋り始めることを予告する。
 inline void playAckBeep() {
     static const detail::Note kAck[] = {
-        { 1318.5f, 50 },   // E6
+        { 1174.7f, 40 },   // D6
+        { 1567.9f, 60 },   // G6
     };
-    detail::playSequence(kAck, 1, /*vol=*/130);
+    detail::playSequence(kAck, 2, /*vol=*/130);
 }
 
 // エラー時。下降 2 音で「失敗」を表現する。
