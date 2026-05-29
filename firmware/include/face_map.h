@@ -142,8 +142,8 @@ inline void resolve_speak_triple(const char* emote,
     // joy / sad / confused / confident / neutral 以外は wide = open のまま
 }
 // エラー系
-inline constexpr int FACE_ERR_WIFI      = F_FLUSTERED;
-inline constexpr int FACE_ERR_HTTP      = F_PANIC;
+inline constexpr int FACE_ERR_WIFI      = F_CONCERNED;
+inline constexpr int FACE_ERR_HTTP      = F_CONCERNED;
 inline constexpr int FACE_ERR_GENERIC   = F_SHOCKED;
 inline constexpr int FACE_ERR_TOO_LARGE = F_EMBARRASSED; // 413: 録音が長すぎた
 inline constexpr int FACE_ERR_SERVER    = F_DIZZY;       // 5xx: サーバ内部エラー
