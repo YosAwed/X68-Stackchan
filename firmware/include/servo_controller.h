@@ -82,6 +82,12 @@ public:
         setTarget(0.0f, speak_base_, LERP_FAST);
     }
 
+    // スワイプ撫で: 右→左→中央の首振りアニメーション (~1 秒)
+    void startHappyWaggle() {
+        waggle_start_ms_ = millis();
+        in_idle_         = false;
+    }
+
     // 発話 RMS (0..1) に連動した微小な頷き
     void setSpeakLipWeight(float w) {
         if (!in_idle_) target_pitch_ = speak_base_ + w * 0.15f;
@@ -92,6 +98,26 @@ public:
     // --------------------------------------------------------
     void update() {
         const uint32_t now = millis();
+
+        // ハッピー首振りアニメーション (右→左→中央, 各 350 ms)
+        if (waggle_start_ms_ > 0) {
+            const uint32_t elapsed = now - waggle_start_ms_;
+            if (elapsed < WAGGLE_DURATION_MS) {
+                const uint32_t phase = elapsed / 350;
+                const float    t     = (float)(elapsed % 350) / 350.0f;
+                switch (phase) {
+                    case 0: target_yaw_ =        t * 0.45f;  break;  // 0 → +0.45
+                    case 1: target_yaw_ =  0.45f - t * 0.90f; break; // +0.45 → -0.45
+                    case 2: target_yaw_ = -0.45f + t * 0.45f; break; // -0.45 → 0
+                    default: target_yaw_ = 0.0f;             break;
+                }
+                target_pitch_ = 0.1f;
+                lerp_speed_   = LERP_FAST;
+            } else {
+                waggle_start_ms_ = 0;
+                goIdle();
+            }
+        }
 
         // Idle 時: ゆっくりランダムにさ迷う
         if (in_idle_ && now - last_idle_ms_ > idle_interval_ms_) {
@@ -131,6 +157,8 @@ private:
     uint32_t last_idle_ms_     = 0;
     uint32_t last_send_ms_     = 0;
     uint32_t idle_interval_ms_ = 3000;
+    uint32_t waggle_start_ms_  = 0;
+    static constexpr uint32_t WAGGLE_DURATION_MS = 1050;  // 3 phases × 350 ms
 
     // --------------------------------------------------------
     //  SCS プロトコル: Goal Position (0x2A) + Time + Speed 書き込み

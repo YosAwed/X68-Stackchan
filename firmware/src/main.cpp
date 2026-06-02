@@ -32,6 +32,10 @@
 #include "face_map.h"
 #include "chime.h"
 #include "servo_controller.h"
+#include "rgb_controller.h"
+#include "touch_handler.h"
+#include "imu_handler.h"
+#include "remote_handler.h"
 
 using namespace stackchan;
 
@@ -117,9 +121,18 @@ static inline void updateIdleMicro() {
 // 定期発話 / 外部 push をサーバから取りに行く間隔 (Idle 中のみ)
 constexpr uint32_t PULL_INTERVAL_MS = 30000;
 
+// 一時リアクション (なでなで / シェイク) の終了時刻
+static uint32_t g_reaction_end_ms = 0;
+
 #if SERVO_ENABLED
 static ServoController g_servo;
 #endif
+#if RGB_ENABLED
+static RgbController   g_rgb;
+#endif
+static TouchHandler    g_touch;
+static ImuHandler      g_imu;
+static RemoteHandler   g_remote;
 
 static void clearSideStatus() {
     const int dx = (M5.Display.width() - PekekoFace::kSize) / 2;
@@ -150,6 +163,9 @@ static void setState(State s, int face_id = -1) {
         case State::Speaking:  g_servo.goSpeaking();  break;
         default: break;
     }
+#endif
+#if RGB_ENABLED
+    g_rgb.onState(s);
 #endif
 }
 
@@ -303,6 +319,10 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size,
                 const float w = constrain((float)rms / 8000.0f, 0.0f, 1.0f);
                 g_servo.setSpeakLipWeight(w);
                 g_servo.update();
+#if RGB_ENABLED
+                g_rgb.setSpeakRms(w);
+                g_rgb.update();
+#endif
             }
 #endif
         }
@@ -360,6 +380,9 @@ void setup() {
         Serial.println("[WARN] Servo init failed — check wiring");
     }
 #endif
+#if RGB_ENABLED
+    g_rgb.begin();
+#endif
 
     if (!g_rec.begin()) {
         g_face.show(faces::FACE_ERR_GENERIC);
@@ -372,6 +395,8 @@ void setup() {
         g_face.show(faces::FACE_ERR_WIFI);
         return;
     }
+    g_remote.begin();
+
     ReadyResponse ready = ChatClient::ready();
     if (!ready.ok) {
         showReadyError(ready);
@@ -400,13 +425,9 @@ void loop() {
         const auto t = M5.Touch.getDetail(0);
         pressed = t.isPressed();
     }
-    // 頭頂部の Si12T タッチセンサーは M5StackChan.TouchSensor で取得する
-    // (Front/Middle/Back 3 ゾーン + スワイプ検出付き)。setup で
-    // M5StackChan.begin() / loop 先頭で M5StackChan.update() を呼んでおり、
-    // ここでは wasPressed() / isPressed() を Idle / Headpat 状態判定に使う。
+    const bool remote_ptt_edge = g_remote.btnAEdge();  // 毎フレーム呼ぶ (エッジ追跡)
 
 #if defined(OFFLINE_MODE) && OFFLINE_MODE
-    // 動作確認用ログ (タッチ Down/Release を 1 回ずつ流す)
     {
         static bool prev = false;
         if (pressed != prev) {
@@ -418,7 +439,7 @@ void loop() {
 
     switch (g_state) {
         case State::Idle: {
-            if (!pressed) {
+            if (!pressed && !g_remote.btnA()) {
                 g_wait_release_after_auto_send = false;
             }
             // 頭頂タッチが優先 (LCD タッチより先にチェック)。
@@ -426,18 +447,28 @@ void loop() {
                 playHeadpatChime();
                 const uint32_t now = millis();
                 g_headpat_start_ms = now;
-                g_headpat_last_press_ms = now;   // ヒステリシス初期化
-                // 初期色: 薄いピンク (はにかみ感)。State::Headpat 内のループで
-                // 経過時間に応じて色 + 脈動を更新する。
+                g_headpat_last_press_ms = now;
                 M5StackChan.showRgbColor(180, 60, 100);
                 setState(State::Headpat, faces::F_BASHFUL);
                 Serial.println("[HEADPAT] start");
                 break;
             }
-            if (pressed && !g_wait_release_after_auto_send) {
-                // LCD タッチ: 呼ばれて「ハッ」と気づく一瞬の驚き顔 → 録音
-                g_face.show(faces::F_SURPRISED);
-                delay(150);
+            // リモコン: ジョイスティックでサーボ手動操作
+#if SERVO_ENABLED
+            if (g_remote.isConnected()) {
+                const float yaw   = g_remote.yawNorm();
+                const float pitch = g_remote.pitchNorm();
+                if (yaw != 0.0f || pitch != 0.0f) {
+                    g_servo.setTarget(yaw, -pitch, ServoController::LERP_FAST);
+                }
+            }
+#endif
+            // LCD タッチ または リモコン BtnA で録音開始
+            if ((pressed || remote_ptt_edge) && !g_wait_release_after_auto_send) {
+                if (pressed) {
+                    g_face.show(faces::F_SURPRISED);
+                    delay(150);
+                }
                 g_rec.start();
                 setState(State::Listening, faces::FACE_LISTENING);
                 break;
@@ -471,7 +502,8 @@ void loop() {
             g_rec.poll();
             drawMicLevel(g_rec.lastPeak(), g_rec.lastRms());
             const bool rec_overflow = g_rec.isFull();
-            if (!pressed || rec_overflow) {
+            // ローカルボタンもリモコンボタンも離されたら送信
+            if ((!pressed && !g_remote.btnA()) || rec_overflow) {
                 if (rec_overflow) {
                     Serial.printf("[REC ] Buffer full (%us): auto-sending\n",
                                   (unsigned)MAX_REC_SECONDS);
@@ -587,6 +619,9 @@ void loop() {
 
 #if SERVO_ENABLED
     g_servo.update();
+#endif
+#if RGB_ENABLED
+    g_rgb.update();
 #endif
 
     delay(5);

@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
+from history_store import HistoryStore
 from scheduler import ScheduledTrigger, Scheduler
 from utterance_queue import UtteranceQueue
 
@@ -312,9 +314,6 @@ async def test_stop_cancels_running_loop():
 @pytest.mark.asyncio
 async def test_silent_trigger_fires_when_user_has_been_silent(tmp_path):
     """指定 sid が silent_for_minutes 以上沈黙していれば発火する。"""
-    import time
-    from history_store import HistoryStore
-
     store = HistoryStore(tmp_path / "h.sqlite")
     # 2 時間前の発話 = 「沈黙が続いている」
     store.append("stackchan-01", "user", "おはよう", ts=time.time() - 7200)
@@ -332,9 +331,6 @@ async def test_silent_trigger_fires_when_user_has_been_silent(tmp_path):
 @pytest.mark.asyncio
 async def test_silent_trigger_skips_when_user_active(tmp_path):
     """sid が直近に発話していれば skip。"""
-    import time
-    from history_store import HistoryStore
-
     store = HistoryStore(tmp_path / "h.sqlite")
     # 5 分前の発話 = まだアクティブ
     store.append("stackchan-01", "user", "やっほー", ts=time.time() - 300)

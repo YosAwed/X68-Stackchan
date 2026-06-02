@@ -36,6 +36,13 @@ static constexpr uint32_t MAX_REC_SECONDS = 10;
 // ---- スピーカ -----------------------------------------------
 static constexpr uint8_t  SPK_VOLUME = 180; // 0..255
 
+// ---- RGB LED (WS2812C x12) ----------------------------------
+// データピンは実機で確認して調整する (StackChan 基板固定)
+// 使わない場合は RGB_ENABLED を 0 にする。
+#define RGB_ENABLED  1
+#define RGB_DATA_PIN 9    // 要実機確認 — 違う場合はここを変える
+#define RGB_NUM_LEDS 12
+
 // ---- サーボ (首振り) ----------------------------------------
 // SCS0009 シリアルサーボ x2。StackChan 基板経由で GPIO6/7 固定。
 // サーボを使わない場合は SERVO_ENABLED を 0 にする。
