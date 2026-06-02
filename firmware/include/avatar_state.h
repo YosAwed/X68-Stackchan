@@ -11,6 +11,7 @@ enum class State {
     Listening,
     Thinking,
     Speaking,
+    Headpat,    // 画面上部 (頭エリア) をタッチされた状態
     Error,
 };
 

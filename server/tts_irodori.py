@@ -9,7 +9,14 @@ synthesize 関数は export されていない。実推論は `irodori_tts.infer
     1. irodori_tts_lite.configure() + patch() でランタイムをパッチ
     2. resolve_checkpoint() でモデルパスを確定
     3. tempfile に WAV を書かせるために sys.argv を組んで infer.main() を呼ぶ
+       (Linux なら /dev/shm を優先利用して実ディスク I/O を回避)
     4. 書き出された WAV を読み戻して 16kHz / mono / PCM16 に整える
+
+並行性:
+    - infer.main() は sys.argv をグローバルに弄る上 InferenceRuntime をモジュール
+      レベルで共有するため、threading.Lock で直列化する必要がある。
+    - ロックスコープは infer.main() の呼び出しのみに限定し、tempfile 読み取りと
+      _to_16k_mono() の torchaudio resample はロック外で並行実行される。
 
 注意 (TODO):
     infer.main() の内部で InferenceRuntime が毎回再構築されると、毎呼び出しで
@@ -39,6 +46,10 @@ import torchaudio.functional as AF
 log = logging.getLogger(__name__)
 
 OUTPUT_SR = 16000  # CoreS3 の I2S 入力に揃える
+
+# Linux の tmpfs (RAM 上のファイルシステム)。あればここに WAV を書いて
+# 物理ディスクへの I/O を回避する。無い OS (mac/Windows) では None。
+_TMPFS_DIR: str | None = "/dev/shm" if os.path.isdir("/dev/shm") else None
 
 
 class TTS:
@@ -92,11 +103,16 @@ class TTS:
         t0 = time.perf_counter()
         seconds = self._estimate_seconds(text)
 
-        # infer.main() は --output-wav にファイルを書くので一時ファイルを用意
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        # infer.main() は --output-wav にファイルを書くので一時ファイルを用意。
+        # Linux なら /dev/shm に置いて物理ディスク I/O を回避する。
+        with tempfile.NamedTemporaryFile(
+            suffix=".wav", delete=False, dir=_TMPFS_DIR,
+        ) as tmp:
             tmp_path = tmp.name
 
         try:
+            # ロックは infer.main() の呼び出しだけに限定。
+            # tempfile 読み取りと _to_16k_mono() はロック外で並行実行される。
             with self._lock:
                 import infer
                 infer.FIXED_SECONDS = float(seconds)
@@ -121,7 +137,8 @@ class TTS:
                     sys.argv = saved
                 infer_ms = (time.perf_counter() - infer_t0) * 1000
 
-                raw = Path(tmp_path).read_bytes()
+            # ── ロック外 ─────────────────────────────
+            raw = Path(tmp_path).read_bytes()
         finally:
             Path(tmp_path).unlink(missing_ok=True)
 

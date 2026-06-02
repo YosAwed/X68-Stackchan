@@ -41,12 +41,23 @@ inline void playBootChime() {
     detail::playSequence(kBootSeq, sizeof(kBootSeq)/sizeof(kBootSeq[0]));
 }
 
-// 応答音声を流す直前。短い "ピッ" を入れて喋り始めることを予告する。
+// 応答音声を流す直前。"ピロン♪" の 2 音で喋り始めることを予告する。
 inline void playAckBeep() {
     static const detail::Note kAck[] = {
-        { 1318.5f, 50 },   // E6
+        { 1174.7f, 40 },   // D6
+        { 1567.9f, 60 },   // G6
     };
-    detail::playSequence(kAck, 1, /*vol=*/130);
+    detail::playSequence(kAck, 2, /*vol=*/130);
+}
+
+// 頭をなでられた時。F6 → A6 → C7 の上昇 3 音で「うれしい」を表現する。
+inline void playHeadpatChime() {
+    static const detail::Note kHeadpat[] = {
+        { 1396.9f, 70 },   // F6
+        { 1760.0f, 70 },   // A6
+        { 2093.0f, 120 },  // C7 (余韻)
+    };
+    detail::playSequence(kHeadpat, 3, /*vol=*/130);
 }
 
 // エラー時。下降 2 音で「失敗」を表現する。

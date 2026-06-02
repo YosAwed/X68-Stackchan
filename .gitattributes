@@ -1,0 +1,39 @@
+# 改行コードを LF に統一する (WSL/Windows 混在環境の CRLF 差分予防)
+* text=auto eol=lf
+
+# 明示的にテキスト扱い
+*.md       text eol=lf
+*.py       text eol=lf
+*.cpp      text eol=lf
+*.h        text eol=lf
+*.ini      text eol=lf
+*.yml      text eol=lf
+*.yaml     text eol=lf
+*.json     text eol=lf
+*.toml     text eol=lf
+*.csv      text eol=lf
+*.txt      text eol=lf
+*.sh       text eol=lf
+*.example  text eol=lf
+.gitignore text eol=lf
+.env*      text eol=lf
+
+# Windows 専用スクリプトは CRLF のまま
+*.bat      text eol=crlf
+*.cmd      text eol=crlf
+*.ps1      text eol=crlf
+
+# バイナリ (Git に差分計算させない)
+*.jpg      binary
+*.jpeg     binary
+*.png      binary
+*.gif      binary
+*.webp     binary
+*.wav      binary
+*.mp3      binary
+*.pdf      binary
+*.bin      binary
+*.elf      binary
+*.pt       binary
+*.onnx     binary
+*.safetensors binary

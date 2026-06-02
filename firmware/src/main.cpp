@@ -7,7 +7,18 @@
 // ========================================================
 #include <Arduino.h>
 #include <WiFi.h>
+// M5Unified より先に LittleFS.h を引いておく。M5GFX (common.hpp) は
+// _LITTLEFS_H_ が定義された時点で DataWrapperT<fs::LittleFSFS> 特殊化を
+// 有効化する。順番が逆だと drawJpgFile(LittleFS, ...) が pure-virtual
+// な抽象クラスを実体化しようとして main.cpp.o が落ちる。
+#include <LittleFS.h>
 #include <M5Unified.h>
+// 頭頂タッチセンサー (Si12T, I2C) を扱う公式 BSP。M5StackChan.begin() で
+// I/O expander + RGB + TouchSensor をまとめて初期化、loop で update() を
+// 呼ぶと M5StackChan.TouchSensor が Button_Class 互換で wasPressed() などを
+// 提供する。
+#include <M5StackChan.h>
+#include <esp_random.h>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -32,7 +43,83 @@ static PekekoFace     g_face;
 static AudioRecorder  g_rec;
 static State          g_state = State::Boot;
 static bool           g_wait_release_after_auto_send = false;
+static uint32_t       g_headpat_start_ms = 0;   // Headpat 状態に入った時刻
+static uint32_t       g_headpat_last_press_ms = 0;  // 直近で isPressed=true だった時刻
 static uint32_t       g_last_mic_log_ms = 0;
+static uint32_t       g_last_pull_ms    = 0;
+
+// ---- Idle 中のまばたき ----
+// 4〜8 秒のランダム間隔で目を閉じた表情 (FACE_BLINK) を 150 ms 表示する。
+// Speaking / Listening / Thinking 中は動かない (state が Idle の時だけ走る)。
+static constexpr uint32_t BLINK_HOLD_MS = 150;
+static constexpr uint32_t BLINK_MIN_MS  = 4000;
+static constexpr uint32_t BLINK_MAX_MS  = 8000;
+static uint32_t g_next_blink_ms    = 0;   // 次のまばたき開始予定 (millis())
+static uint32_t g_blink_started_ms = 0;   // 0 = 表示してない、>0 = 表示中の開始時刻
+
+static inline void scheduleNextBlink() {
+    const uint32_t span = BLINK_MAX_MS - BLINK_MIN_MS;
+    g_next_blink_ms    = millis() + BLINK_MIN_MS + (uint32_t)(rand() % span);
+    g_blink_started_ms = 0;
+}
+
+// ---- Idle 中のマイクロ表情 (気分のゆらぎ) ----
+// 8〜15 秒のランダム間隔で 5 種の表情を 800 ms 表示する。
+// blink と排他: 片方が動いている間は他方をトリガしない。
+static constexpr uint32_t MICRO_HOLD_MS = 800;
+static constexpr uint32_t MICRO_MIN_MS  = 8000;
+static constexpr uint32_t MICRO_MAX_MS  = 15000;
+static uint32_t g_next_micro_ms    = 0;
+static uint32_t g_micro_started_ms = 0;
+
+static inline void scheduleNextMicro() {
+    const uint32_t span = MICRO_MAX_MS - MICRO_MIN_MS;
+    g_next_micro_ms    = millis() + MICRO_MIN_MS + (uint32_t)(rand() % span);
+    g_micro_started_ms = 0;
+}
+
+static inline void updateIdleBlink() {
+    const uint32_t now = millis();
+    if (g_blink_started_ms != 0) {
+        if (now - g_blink_started_ms >= BLINK_HOLD_MS) {
+            g_face.show(faces::FACE_IDLE);
+            scheduleNextBlink();
+        }
+        return;
+    }
+    if (g_micro_started_ms != 0) return;   // マイクロ表情中はトリガしない
+    if (now >= g_next_blink_ms) {
+        g_face.show(faces::FACE_BLINK);
+        g_blink_started_ms = now;
+    }
+}
+
+static inline void updateIdleMicro() {
+    const uint32_t now = millis();
+    if (g_micro_started_ms != 0) {
+        if (now - g_micro_started_ms >= MICRO_HOLD_MS) {
+            g_face.show(faces::FACE_IDLE);
+            scheduleNextMicro();
+        }
+        return;
+    }
+    if (g_blink_started_ms != 0) return;   // まばたき中はトリガしない
+    if (now >= g_next_micro_ms) {
+        static const int kMicroFaces[] = {
+            faces::F_SOFT_SMILE,
+            faces::F_SPARKLE_EYES,
+            faces::F_BASHFUL,
+            faces::F_BORED,
+            faces::F_YAWN_SMALL,
+        };
+        constexpr int kN = sizeof(kMicroFaces) / sizeof(kMicroFaces[0]);
+        g_face.show(kMicroFaces[rand() % kN]);
+        g_micro_started_ms = now;
+    }
+}
+
+// 定期発話 / 外部 push をサーバから取りに行く間隔 (Idle 中のみ)
+constexpr uint32_t PULL_INTERVAL_MS = 30000;
 
 // 一時リアクション (なでなで / シェイク) の終了時刻
 static uint32_t g_reaction_end_ms = 0;
@@ -60,6 +147,14 @@ static void setState(State s, int face_id = -1) {
     g_state = s;
     if (face_id > 0) g_face.show(face_id);
     clearSideStatus();
+    // Idle に入る時にまばたき/マイクロ表情タイマを初期化、Idle 以外に出る時は停止。
+    if (s == State::Idle) {
+        scheduleNextBlink();
+        scheduleNextMicro();
+    } else {
+        g_blink_started_ms = 0;
+        g_micro_started_ms = 0;
+    }
 #if SERVO_ENABLED
     switch (s) {
         case State::Idle:      g_servo.goIdle();      break;
@@ -134,8 +229,9 @@ static bool connectWiFi() {
     return true;
 }
 
-// 応答 WAV を再生しながら、PCM の RMS で口パク (口閉/口開 2 フレーム)
-static void playWavWithLipsync(const uint8_t* wav, size_t size) {
+// 応答 WAV を再生しながら、PCM の RMS で口パク (口閉/口開/大開 3 段階)
+static void playWavWithLipsync(const uint8_t* wav, size_t size,
+                               const char* emote = nullptr) {
     if (!wav || size < 44) return;
 
     // WAV ヘッダから data チャンクを探す (簡易: 標準的な配置を仮定)
@@ -182,9 +278,19 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size) {
     const uint32_t t0 = millis();
     M5.Speaker.playWav(wav, size);
 
-    constexpr int RMS_THRESH = 2200;            // 経験値: 大きすぎたら下げる
+    // 3 段階閾値: <LOW=口閉じ、<HIGH=口開け、>=HIGH=大開け (climax 音節)
+    // RMS_THRESH=2200 の旧運用と同等の頻度で open が出る帯域に挟む。
+    constexpr int RMS_LOW  = 1400;
+    constexpr int RMS_HIGH = 3500;
     int  last_face = -1;
     uint32_t last_update = 0;
+
+    // 発話中の (口閉, 口開, 大開) を emote タグに応じて決める。
+    // 未知 / 空 / nullptr なら neutral 既定 (closed=SMILE, open=DETERMINED, wide=JOY)。
+    int face_close = faces::FACE_SPEAK_CLOSED;
+    int face_open  = faces::FACE_SPEAK_OPEN;
+    int face_wide  = faces::FACE_SPEAK_WIDE;
+    faces::resolve_speak_triple(emote, face_close, face_open, face_wide);
 
     while (M5.Speaker.isPlaying()) {
         const uint32_t now = millis();
@@ -201,8 +307,9 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size) {
                 sumsq += (int32_t)s * s;
             }
             const int rms = (hi > lo) ? (int)std::sqrt((double)sumsq / (hi - lo)) : 0;
-            const int next = (rms > RMS_THRESH) ? faces::FACE_SPEAK_OPEN
-                                                : faces::FACE_SPEAK_CLOSED;
+            const int next = (rms >= RMS_HIGH) ? face_wide
+                            : (rms >= RMS_LOW)  ? face_open
+                                                : face_close;
             if (next != last_face) {
                 g_face.show(next);
                 last_face = next;
@@ -221,8 +328,8 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size) {
         }
         delay(4);
     }
-    // 締めは口閉じ
-    g_face.show(faces::FACE_SPEAK_CLOSED);
+    // 締めは口閉じ (emote ペアに合わせる)
+    g_face.show(face_close);
 }
 
 static void handleHttpError(int status) {
@@ -249,6 +356,9 @@ static void handleHttpError(int status) {
 void setup() {
     auto cfg = M5.config();
     M5.begin(cfg);
+    // 公式 StackChan キット拡張 (I/O expander, RGB, 頭頂 Si12T タッチ) を初期化。
+    // M5Unified 配下の I2C バスをそのまま借りるので順序的に M5.begin() の後で。
+    M5StackChan.begin();
     Serial.begin(115200);
 
     // (1) Human68k 風スプラッシュ + 起動チャイム (画面と音は同時進行)
@@ -278,6 +388,9 @@ void setup() {
         g_face.show(faces::FACE_ERR_GENERIC);
         return;
     }
+#if defined(OFFLINE_MODE) && OFFLINE_MODE
+    Serial.println("[OFFLINE] skipping WiFi & server ready check (kawaii test mode)");
+#else
     if (!connectWiFi()) {
         g_face.show(faces::FACE_ERR_WIFI);
         return;
@@ -290,73 +403,56 @@ void setup() {
         return;
     }
     Serial.printf("[READY] server ok: %s\n", ready.body.c_str());
+#endif
 
     // 短いウェーブの後、Idle 表情へ
     delay(700);
+    const uint32_t seed = micros() ^ esp_random();
+    randomSeed(seed);
+    srand(seed);   // upstream の scheduleNextBlink が rand() を使う
     setState(State::Idle, faces::FACE_IDLE);
 }
 
 void loop() {
     M5.update();
+    M5StackChan.update();   // 頭頂タッチセンサー (Si12T) のポーリング
 
-    const bool pressed          = M5.BtnA.isPressed();
-    const bool remote_ptt_edge  = g_remote.btnAEdge();  // call every frame for edge tracking
+    // CoreS3 SE は物理ボタンが無く、M5Unified の virtual button マッピングも
+    // デフォルトでは効かない (touch 検知はできるが BtnA/B/C は発火しない)。
+    // M5.Touch を直接読んで「画面のどこかを触っていれば押下 = 録音」と扱う。
+    bool pressed = false;
+    if (M5.Touch.getCount() > 0) {
+        const auto t = M5.Touch.getDetail(0);
+        pressed = t.isPressed();
+    }
+    const bool remote_ptt_edge = g_remote.btnAEdge();  // 毎フレーム呼ぶ (エッジ追跡)
+
+#if defined(OFFLINE_MODE) && OFFLINE_MODE
+    {
+        static bool prev = false;
+        if (pressed != prev) {
+            Serial.printf("[TOUCH] %s\n", pressed ? "PRESS" : "RELEASE");
+            prev = pressed;
+        }
+    }
+#endif
 
     switch (g_state) {
         case State::Idle: {
-            // リアクション終了チェック
-            if (g_reaction_end_ms > 0 && millis() > g_reaction_end_ms) {
-                g_reaction_end_ms = 0;
-                g_face.show(faces::FACE_IDLE);
-#if RGB_ENABLED
-                g_rgb.onState(State::Idle);
-#endif
+            if (!pressed && !g_remote.btnA()) {
+                g_wait_release_after_auto_send = false;
             }
-
-            // タッチ検出 (スワイプ優先, リアクション中は無視)
-            if (g_reaction_end_ms == 0) {
-                const auto touch_ev = g_touch.update();
-                if (touch_ev == TouchHandler::Event::Swipe) {
-                    // スワイプ: 喜び表情 + 首振りアニメーション
-                    g_face.show(faces::FACE_SWIPE);
-#if RGB_ENABLED
-                    g_rgb.setScene(RgbScene::Swipe);
-#endif
-#if SERVO_ENABLED
-                    g_servo.startHappyWaggle();
-#endif
-                    playAckBeep();
-                    g_reaction_end_ms = millis() + 2500;
-                } else if (touch_ev == TouchHandler::Event::Pet) {
-                    // ホールドなでなで: はにかみ表情 + 上向きチルト
-                    g_face.show(faces::FACE_PET);
-#if RGB_ENABLED
-                    g_rgb.setScene(RgbScene::Pet);
-#endif
-#if SERVO_ENABLED
-                    g_servo.setTarget(0.0f, 0.3f, ServoController::LERP_FAST);
-#endif
-                    playAckBeep();
-                    g_reaction_end_ms = millis() + 2000;
-                }
+            // 頭頂タッチが優先 (LCD タッチより先にチェック)。
+            if (M5StackChan.TouchSensor.wasPressed() && !g_wait_release_after_auto_send) {
+                playHeadpatChime();
+                const uint32_t now = millis();
+                g_headpat_start_ms = now;
+                g_headpat_last_press_ms = now;
+                M5StackChan.showRgbColor(180, 60, 100);
+                setState(State::Headpat, faces::F_BASHFUL);
+                Serial.println("[HEADPAT] start");
+                break;
             }
-
-            // シェイク検出 (リアクション中は無視)
-            if (g_reaction_end_ms == 0 && g_imu.update()) {
-                g_face.show(faces::FACE_SHAKEN);
-#if RGB_ENABLED
-                g_rgb.setScene(RgbScene::Shaken);
-#endif
-#if SERVO_ENABLED
-                g_servo.setTarget(
-                    (float)(rand() % 5 - 2) * 0.3f,
-                    (float)(rand() % 3 - 1) * 0.2f,
-                    ServoController::LERP_FAST);
-#endif
-                playErrorBeep();
-                g_reaction_end_ms = millis() + 1500;
-            }
-
             // リモコン: ジョイスティックでサーボ手動操作
 #if SERVO_ENABLED
             if (g_remote.isConnected()) {
@@ -367,16 +463,38 @@ void loop() {
                 }
             }
 #endif
-
-            if (!pressed && !g_remote.btnA()) {
-                g_wait_release_after_auto_send = false;
-            }
-            // ローカルボタン または リモコン BtnA エッジで録音開始
-            if ((pressed || remote_ptt_edge) &&
-                !g_wait_release_after_auto_send && g_reaction_end_ms == 0) {
+            // LCD タッチ または リモコン BtnA で録音開始
+            if ((pressed || remote_ptt_edge) && !g_wait_release_after_auto_send) {
+                if (pressed) {
+                    g_face.show(faces::F_SURPRISED);
+                    delay(150);
+                }
                 g_rec.start();
                 setState(State::Listening, faces::FACE_LISTENING);
+                break;
             }
+#if !defined(OFFLINE_MODE) || !OFFLINE_MODE
+            // 待機中: スケジュール発話 / 外部 push を取りにいく (wait=0 即時応答)
+            // OFFLINE_MODE では WiFi が未初期化のため pull を呼ぶと
+            // HTTPClient が semaphore assert で crash → ループ再起動するので塞ぐ。
+            if (millis() - g_last_pull_ms >= PULL_INTERVAL_MS) {
+                g_last_pull_ms = millis();
+                PullResponse pr = ChatClient::pull(0);
+                if (pr.ok && pr.body && pr.body_size > 0) {
+                    Serial.printf("[PUSH] %s (source=%s emote=%s)\n",
+                                  pr.bot_text.c_str(), pr.source.c_str(),
+                                  pr.emote.length() ? pr.emote.c_str() : "neutral");
+                    setState(State::Speaking);     // 顔/サーボのみ。lipsync が表情を上書き
+                    playAckBeep();
+                    playWavWithLipsync(pr.body, pr.body_size, pr.emote.c_str());
+                    free(pr.body);
+                    setState(State::Idle, faces::FACE_IDLE);
+                }
+            }
+#endif
+            // 何もない時はまばたき + マイクロ表情を刻む
+            updateIdleBlink();
+            updateIdleMicro();
             break;
         }
 
@@ -395,6 +513,15 @@ void loop() {
                 }
                 const size_t n = g_rec.stop();
                 setState(State::Thinking, faces::FACE_THINKING);
+#if defined(OFFLINE_MODE) && OFFLINE_MODE
+                // OFFLINE: HTTP 呼び出しせず、考えてるフリ → ack → 笑顔 → Idle
+                Serial.printf("[OFFLINE] recorded %u bytes (would POST /chat)\n",
+                              (unsigned)n);
+                delay(800);
+                playAckBeep();
+                g_face.show(faces::F_SOFT_SMILE);
+                delay(600);
+#else
                 ChatResponse r = ChatClient::send(g_rec.data(), n);
                 if (r.ok) {
                     Serial.printf("[USER] %s\n", r.user_text.c_str());
@@ -405,15 +532,84 @@ void loop() {
                     if (r.tts_backend.length() > 0) {
                         Serial.printf("[TTS ] %s\n", r.tts_backend.c_str());
                     }
+                    if (r.emote.length() > 0) {
+                        Serial.printf("[EMO ] %s\n", r.emote.c_str());
+                    }
                     g_state = State::Speaking;
                     playAckBeep();
-                    playWavWithLipsync(r.body, r.body_size);
+                    playWavWithLipsync(r.body, r.body_size, r.emote.c_str());
                     free(r.body);
                 } else {
                     handleHttpError(r.http_status);
                 }
+#endif
                 setState(State::Idle, faces::FACE_IDLE);
             }
+            break;
+        }
+
+        case State::Headpat: {
+            // 「撫でる」動きで Si12T が一瞬 0 強度を返すことがあるので、
+            // 500ms 以上タッチが途切れない限り Headpat を継続するヒステリシス。
+            const uint32_t now = millis();
+            if (M5StackChan.TouchSensor.isPressed()) {
+                g_headpat_last_press_ms = now;
+            }
+            constexpr uint32_t HEADPAT_RELEASE_MS = 500;
+            if (now - g_headpat_last_press_ms > HEADPAT_RELEASE_MS) {
+                // 撫でられ終わり: LED 消灯 → やわらか笑顔 → Idle
+                const uint32_t total = now - g_headpat_start_ms;
+                Serial.printf("[HEADPAT] end (total=%ums)\n", (unsigned)total);
+                M5StackChan.showRgbColor(0, 0, 0);
+                g_face.show(faces::F_SOFT_SMILE);
+                delay(600);
+                setState(State::Idle, faces::FACE_IDLE);
+                break;
+            }
+            // 撫でられ継続: 100ms 周期で表情 / RGB を更新。
+            static uint32_t last_update = 0;
+            if (now - last_update < 100) break;
+            last_update = now;
+
+            const uint32_t held_ms = now - g_headpat_start_ms;
+
+            // 表情: 段階的に「とろけ」へ
+            //   0〜1.5s: F_BASHFUL        (はにかみ)
+            //   1.5〜3s: F_LAUGH_EYES_CLOSED (目閉じ大笑い = とろけ笑い)
+            //   3s〜:   F_SLEEPING       (気持ちよくて眠っちゃった)
+            int target_face;
+            if (held_ms < 1500)      target_face = faces::F_BASHFUL;
+            else if (held_ms < 3000) target_face = faces::F_LAUGH_EYES_CLOSED;
+            else                     target_face = faces::F_SLEEPING;
+            static int prev_face = -1;
+            if (target_face != prev_face) {
+                Serial.printf("[HEADPAT] stage @%ums -> face_%02d\n",
+                              (unsigned)held_ms, target_face);
+                prev_face = target_face;
+            }
+            g_face.show(target_face);   // show() は同 ID なら redraw を省く
+
+            // RGB: 段階で色味、脈動 (sin 2.5Hz 相当) で「呼吸」感
+            const float t_sec = held_ms / 1000.0f;
+            const float pulse = 0.55f + 0.45f * sinf(t_sec * 2.5f);  // 0.10..1.00
+            uint8_t r, g, b;
+            if (held_ms < 1500) {
+                // 薄いピンク
+                r = (uint8_t)(180 * pulse);
+                g = (uint8_t)( 60 * pulse);
+                b = (uint8_t)(100 * pulse);
+            } else if (held_ms < 3000) {
+                // 暖かいオレンジ
+                r = (uint8_t)(255 * pulse);
+                g = (uint8_t)(120 * pulse);
+                b = (uint8_t)( 40 * pulse);
+            } else {
+                // 紫マゼンタ (夢見心地)
+                r = (uint8_t)(150 * pulse);
+                g = (uint8_t)( 40 * pulse);
+                b = (uint8_t)(200 * pulse);
+            }
+            M5StackChan.showRgbColor(r, g, b);
             break;
         }
 

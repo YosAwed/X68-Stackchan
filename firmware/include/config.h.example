@@ -10,11 +10,17 @@
 static constexpr const char* WIFI_SSID = "your-ssid";
 static constexpr const char* WIFI_PASS = "your-password";
 
-// ---- 母艦 (Mac mini) ---------------------------------------
-// FastAPI サーバの IP とポート
+// ---- 母艦 (FastAPI サーバ) ---------------------------------
+// 母艦 PC / Mac の **LAN IP** を入れる。
+//   ※ `localhost` / `127.0.0.1` は CoreS3 から見ると自分自身を指してしまうので不可。
+//   ※ Windows なら `ipconfig | findstr IPv4`、macOS なら `ipconfig getifaddr en0` で確認。
+//   ※ 母艦と CoreS3 は同じ Wi-Fi LAN に置くこと。
 static constexpr const char* SERVER_HOST = "192.168.1.42";
 static constexpr uint16_t    SERVER_PORT = 8000;
 static constexpr const char* SERVER_PATH = "/chat";
+// 定期発話 / 外部 push の取り出し (GET /pull?wait=...) は
+// http_client.h の ChatClient::pull() がパスをハードコードしている。
+// SCHEDULE_ENABLED=0 でも /pull 自体は有効 (キュー空時は 204 が返る)。
 
 // セッション ID。会話履歴をサーバ側で保持したい場合に使う
 static constexpr const char* SESSION_ID  = "stackchan-01";
@@ -47,3 +53,11 @@ static constexpr uint8_t  SPK_VOLUME = 180; // 0..255
 // STT + LLM + TTS の合計を待つ。GPU やモデルサイズに応じて調整する。
 // 目安: MAX_REC_SECONDS * 1000 + LLM 最大 30000 + TTS 最大 15000。
 static constexpr uint32_t HTTP_TIMEOUT_MS = 55000;
+
+// ---- オフライン (kawaii 動作確認) 用テストモード ------------
+// 1 にすると WiFi 接続 / サーバ ready 確認 / 定期 pull / 録音後 send を
+// すべてスキップし、起動後すぐ Idle に入る。表情アニメ (まばたき / マイクロ
+// 表情 / 押下時の驚き) を WiFi なしで実機確認したい時用。
+// ボタン押下時は録音はするが、HTTP 送信はせず擬似的に「考えてる」表示 →
+// ack beep → 笑顔 → Idle の流れになる。本番運用時は 0 に戻す。
+#define OFFLINE_MODE 0

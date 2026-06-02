@@ -8,7 +8,9 @@
 
 - M5Stack CoreS3 SE 本体 + USB-C ケーブル
 - スタックちゃん Takao Base (組立済 or キット)
-- サーボ SG90 ×2
+- Feetech SCS0009 シリアルサーボ ×2 (Yaw=ID1 / Pitch=ID2)
+  - StackChan 基板経由で UART (GPIO6/7, 1 Mbps) に接続。SG90 PWM サーボ用ではない
+  - サーボを使わない場合は `config.h` の `SERVO_ENABLED` を `0` にする
 - Windows 11 + WSL2 (Ubuntu 22.04 以降) + NVIDIA GPU (Ampere 以降, VRAM 12GB 以上推奨。8GB は whisper-small + Irodori + Ollama qwen2.5:7b で結構ギリ)
 - 同一 Wi-Fi LAN (CoreS3 から母艦に IP で届くこと)
 
@@ -125,6 +127,8 @@ ipconfig | findstr IPv4    # 例: 192.168.1.42
 
 ## 2. CoreS3 側のセットアップ
 
+CoreS3 側は **「① 表情画像 (LittleFS) を焼く」「② ファーム本体を焼く」「③ `config.h` で Wi-Fi と母艦 IP を設定」** の 3 つを別々に行う必要がある。①②③ をどの順で実施してもよいが、いずれか 1 つでも欠けると `LittleFS init failed` や `WiFi connect failed` で起動しない。
+
 ### 2-1. PlatformIO 環境
 
 PlatformIO CLI を pip でインストールする (`apt` 版は古くて ESP32-S3 非対応のことが多い):
@@ -177,14 +181,42 @@ pio device monitor -e m5stack-cores3
 
 シリアルに `WiFi connected: 192.168.x.x` と出れば疎通 OK。
 
-## 3. 動作確認
+## 3. 動作確認 (段階的に切り分ける)
 
-1. 電源投入 → Human68k 風スプラッシュ + 起動チャイム → ぺけ子ちゃんが手を振る (face_36)
-2. 通常待機 (face_01 中立) に戻る
-3. 画面下中央 (BtnA 領域) をタッチで押し続けると「？」顔 (face_15) に変わって録音開始
-4. 離すと「考え中」顔 (face_21, 手を顎) → 数秒後 "ピッ" の後にぺけ子ちゃんが返事を喋る
-5. 喋っている間 face_02 (口閉) / face_29 (口開) を PCM 振幅で切り替えて口パク
-6. エラー時はあわてた表情 + 下降ビープ
+依存が多いので、いきなり会話まで通すよりも **「顔表示 → サーバ接続 → 会話」** の順で 1 段ずつ確かめると詰まりにくい。
+
+### ステップ 1: 顔画像が出るか (CoreS3 単体)
+
+母艦サーバを止めた状態で電源を入れる。LittleFS と画面・サーボだけが対象。
+
+- ✅ Human68k 風スプラッシュ + 起動チャイム
+- ✅ ぺけ子ちゃんが手を振る (face_36) → 通常待機 (face_01)
+- ❌ `LittleFS init failed` が出る場合は `pio run -t uploadfs` をやり直す
+- ❌ サーボが暴れる場合は `config.h` の `SERVO_ENABLED=0` でいったん切る
+
+ここが通れば、ファーム本体 + LittleFS イメージ + 表情マップは正常。
+
+### ステップ 2: 母艦サーバに届くか (Wi-Fi + HTTP)
+
+母艦の uvicorn を起動した状態で、CoreS3 のシリアルログを確認する。
+
+- ✅ `WiFi connected: 192.168.x.x` が出る → Wi-Fi 設定 OK
+- ✅ Idle 中に 30 秒おきに `[PULL] 204` (or `[PULL] ok`) が出る → `/pull` で母艦に到達できている
+- ❌ `WiFi connect failed` → `config.h` の SSID/PASS、2.4GHz 帯か
+- ❌ `[PULL] http err` → `config.h` の `SERVER_HOST` が母艦の LAN IP になっているか、母艦のファイアウォールで 8000 が開いているか
+
+母艦側で `curl -X POST -H "X-Stackchan-Token: $ENQUEUE_TOKEN" -F "text=テスト" http://localhost:8000/enqueue` を実行すれば CoreS3 が次の `/pull` で発話する。`ENQUEUE_TOKEN` は `server/.env` に設定した値を使う。経路全体 (Wi-Fi → HTTP → TTS → CoreS3 で再生) の疎通確認に使える。
+
+### ステップ 3: 会話 (push-to-talk)
+
+ステップ 2 まで通っていれば、あとは録音 → STT → LLM → TTS の往復だけ。
+
+1. 画面下中央 (BtnA 領域) をタッチで押し続けると「？」顔 (face_15) に変わって録音開始
+2. 離すと「考え中」顔 (face_21, 手を顎) → 数秒後 "ピッ" の後にぺけ子ちゃんが返事を喋る
+3. 喋っている間 face_02 (口閉) / face_29 (口開) を PCM 振幅で切り替えて口パク
+4. エラー時はあわてた表情 + 下降ビープ (`config.h` の `HTTP_TIMEOUT_MS` を超えた場合など)
+
+ここで止まる場合は、母艦側の uvicorn ログで STT / LLM / TTS のどこで落ちたかを見る (`X-Stackchan-Timing` ヘッダにも各段の所要時間が出る)。
 
 ## 4. トラブルシュート
 
