@@ -39,6 +39,8 @@ static PekekoFace     g_face;
 static AudioRecorder  g_rec;
 static State          g_state = State::Boot;
 static bool           g_wait_release_after_auto_send = false;
+static uint32_t       g_headpat_start_ms = 0;   // Headpat 状態に入った時刻
+static uint32_t       g_headpat_last_press_ms = 0;  // 直近で isPressed=true だった時刻
 static uint32_t       g_last_mic_log_ms = 0;
 static uint32_t       g_last_pull_ms    = 0;
 
@@ -422,7 +424,14 @@ void loop() {
             // 頭頂タッチが優先 (LCD タッチより先にチェック)。
             if (M5StackChan.TouchSensor.wasPressed() && !g_wait_release_after_auto_send) {
                 playHeadpatChime();
+                const uint32_t now = millis();
+                g_headpat_start_ms = now;
+                g_headpat_last_press_ms = now;   // ヒステリシス初期化
+                // 初期色: 薄いピンク (はにかみ感)。State::Headpat 内のループで
+                // 経過時間に応じて色 + 脈動を更新する。
+                M5StackChan.showRgbColor(180, 60, 100);
                 setState(State::Headpat, faces::F_BASHFUL);
+                Serial.println("[HEADPAT] start");
                 break;
             }
             if (pressed && !g_wait_release_after_auto_send) {
@@ -508,13 +517,67 @@ void loop() {
         }
 
         case State::Headpat: {
-            // 頭頂タッチセンサーが押されている間は F_BASHFUL のまま。
-            // 離されたら F_SOFT_SMILE をちょっと挟んで Idle に戻る。
-            if (!M5StackChan.TouchSensor.isPressed()) {
+            // 「撫でる」動きで Si12T が一瞬 0 強度を返すことがあるので、
+            // 500ms 以上タッチが途切れない限り Headpat を継続するヒステリシス。
+            const uint32_t now = millis();
+            if (M5StackChan.TouchSensor.isPressed()) {
+                g_headpat_last_press_ms = now;
+            }
+            constexpr uint32_t HEADPAT_RELEASE_MS = 500;
+            if (now - g_headpat_last_press_ms > HEADPAT_RELEASE_MS) {
+                // 撫でられ終わり: LED 消灯 → やわらか笑顔 → Idle
+                const uint32_t total = now - g_headpat_start_ms;
+                Serial.printf("[HEADPAT] end (total=%ums)\n", (unsigned)total);
+                M5StackChan.showRgbColor(0, 0, 0);
                 g_face.show(faces::F_SOFT_SMILE);
                 delay(600);
                 setState(State::Idle, faces::FACE_IDLE);
+                break;
             }
+            // 撫でられ継続: 100ms 周期で表情 / RGB を更新。
+            static uint32_t last_update = 0;
+            if (now - last_update < 100) break;
+            last_update = now;
+
+            const uint32_t held_ms = now - g_headpat_start_ms;
+
+            // 表情: 段階的に「とろけ」へ
+            //   0〜1.5s: F_BASHFUL        (はにかみ)
+            //   1.5〜3s: F_LAUGH_EYES_CLOSED (目閉じ大笑い = とろけ笑い)
+            //   3s〜:   F_SLEEPING       (気持ちよくて眠っちゃった)
+            int target_face;
+            if (held_ms < 1500)      target_face = faces::F_BASHFUL;
+            else if (held_ms < 3000) target_face = faces::F_LAUGH_EYES_CLOSED;
+            else                     target_face = faces::F_SLEEPING;
+            static int prev_face = -1;
+            if (target_face != prev_face) {
+                Serial.printf("[HEADPAT] stage @%ums -> face_%02d\n",
+                              (unsigned)held_ms, target_face);
+                prev_face = target_face;
+            }
+            g_face.show(target_face);   // show() は同 ID なら redraw を省く
+
+            // RGB: 段階で色味、脈動 (sin 2.5Hz 相当) で「呼吸」感
+            const float t_sec = held_ms / 1000.0f;
+            const float pulse = 0.55f + 0.45f * sinf(t_sec * 2.5f);  // 0.10..1.00
+            uint8_t r, g, b;
+            if (held_ms < 1500) {
+                // 薄いピンク
+                r = (uint8_t)(180 * pulse);
+                g = (uint8_t)( 60 * pulse);
+                b = (uint8_t)(100 * pulse);
+            } else if (held_ms < 3000) {
+                // 暖かいオレンジ
+                r = (uint8_t)(255 * pulse);
+                g = (uint8_t)(120 * pulse);
+                b = (uint8_t)( 40 * pulse);
+            } else {
+                // 紫マゼンタ (夢見心地)
+                r = (uint8_t)(150 * pulse);
+                g = (uint8_t)( 40 * pulse);
+                b = (uint8_t)(200 * pulse);
+            }
+            M5StackChan.showRgbColor(r, g, b);
             break;
         }
 
