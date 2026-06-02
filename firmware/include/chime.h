@@ -50,6 +50,16 @@ inline void playAckBeep() {
     detail::playSequence(kAck, 2, /*vol=*/130);
 }
 
+// 頭をなでられた時。F6 → A6 → C7 の上昇 3 音で「うれしい」を表現する。
+inline void playHeadpatChime() {
+    static const detail::Note kHeadpat[] = {
+        { 1396.9f, 70 },   // F6
+        { 1760.0f, 70 },   // A6
+        { 2093.0f, 120 },  // C7 (余韻)
+    };
+    detail::playSequence(kHeadpat, 3, /*vol=*/130);
+}
+
 // エラー時。下降 2 音で「失敗」を表現する。
 inline void playErrorBeep() {
     static const detail::Note kErr[] = {

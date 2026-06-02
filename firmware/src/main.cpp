@@ -13,6 +13,11 @@
 // な抽象クラスを実体化しようとして main.cpp.o が落ちる。
 #include <LittleFS.h>
 #include <M5Unified.h>
+// 頭頂タッチセンサー (Si12T, I2C) を扱う公式 BSP。M5StackChan.begin() で
+// I/O expander + RGB + TouchSensor をまとめて初期化、loop で update() を
+// 呼ぶと M5StackChan.TouchSensor が Button_Class 互換で wasPressed() などを
+// 提供する。
+#include <M5StackChan.h>
 #include <esp_random.h>
 #include <cmath>
 #include <cstdint>
@@ -329,6 +334,9 @@ static void handleHttpError(int status) {
 void setup() {
     auto cfg = M5.config();
     M5.begin(cfg);
+    // 公式 StackChan キット拡張 (I/O expander, RGB, 頭頂 Si12T タッチ) を初期化。
+    // M5Unified 配下の I2C バスをそのまま借りるので順序的に M5.begin() の後で。
+    M5StackChan.begin();
     Serial.begin(115200);
 
     // (1) Human68k 風スプラッシュ + 起動チャイム (画面と音は同時進行)
@@ -380,16 +388,20 @@ void setup() {
 
 void loop() {
     M5.update();
+    M5StackChan.update();   // 頭頂タッチセンサー (Si12T) のポーリング
 
     // CoreS3 SE は物理ボタンが無く、M5Unified の virtual button マッピングも
     // デフォルトでは効かない (touch 検知はできるが BtnA/B/C は発火しない)。
-    // ここでは M5.Touch を直接読んで「画面のどこかを触っていれば押下」と扱う。
-    // 厳密に BtnA 領域を区切りたい場合はここで t.x / t.y のチェックを足す。
+    // M5.Touch を直接読んで「画面のどこかを触っていれば押下 = 録音」と扱う。
     bool pressed = false;
     if (M5.Touch.getCount() > 0) {
         const auto t = M5.Touch.getDetail(0);
         pressed = t.isPressed();
     }
+    // 頭頂部の Si12T タッチセンサーは M5StackChan.TouchSensor で取得する
+    // (Front/Middle/Back 3 ゾーン + スワイプ検出付き)。setup で
+    // M5StackChan.begin() / loop 先頭で M5StackChan.update() を呼んでおり、
+    // ここでは wasPressed() / isPressed() を Idle / Headpat 状態判定に使う。
 
 #if defined(OFFLINE_MODE) && OFFLINE_MODE
     // 動作確認用ログ (タッチ Down/Release を 1 回ずつ流す)
@@ -407,8 +419,14 @@ void loop() {
             if (!pressed) {
                 g_wait_release_after_auto_send = false;
             }
+            // 頭頂タッチが優先 (LCD タッチより先にチェック)。
+            if (M5StackChan.TouchSensor.wasPressed() && !g_wait_release_after_auto_send) {
+                playHeadpatChime();
+                setState(State::Headpat, faces::F_BASHFUL);
+                break;
+            }
             if (pressed && !g_wait_release_after_auto_send) {
-                // 呼ばれて「ハッ」と気づく一瞬の驚き顔
+                // LCD タッチ: 呼ばれて「ハッ」と気づく一瞬の驚き顔 → 録音
                 g_face.show(faces::F_SURPRISED);
                 delay(150);
                 g_rec.start();
@@ -484,6 +502,17 @@ void loop() {
                     handleHttpError(r.http_status);
                 }
 #endif
+                setState(State::Idle, faces::FACE_IDLE);
+            }
+            break;
+        }
+
+        case State::Headpat: {
+            // 頭頂タッチセンサーが押されている間は F_BASHFUL のまま。
+            // 離されたら F_SOFT_SMILE をちょっと挟んで Idle に戻る。
+            if (!M5StackChan.TouchSensor.isPressed()) {
+                g_face.show(faces::F_SOFT_SMILE);
+                delay(600);
                 setState(State::Idle, faces::FACE_IDLE);
             }
             break;
