@@ -7,6 +7,11 @@
 // ========================================================
 #include <Arduino.h>
 #include <WiFi.h>
+// M5Unified より先に LittleFS.h を引いておく。M5GFX (common.hpp) は
+// _LITTLEFS_H_ が定義された時点で DataWrapperT<fs::LittleFSFS> 特殊化を
+// 有効化する。順番が逆だと drawJpgFile(LittleFS, ...) が pure-virtual
+// な抽象クラスを実体化しようとして main.cpp.o が落ちる。
+#include <LittleFS.h>
 #include <M5Unified.h>
 #include <esp_random.h>
 #include <cmath>
@@ -350,6 +355,9 @@ void setup() {
         g_face.show(faces::FACE_ERR_GENERIC);
         return;
     }
+#if defined(OFFLINE_MODE) && OFFLINE_MODE
+    Serial.println("[OFFLINE] skipping WiFi & server ready check (kawaii test mode)");
+#else
     if (!connectWiFi()) {
         g_face.show(faces::FACE_ERR_WIFI);
         return;
@@ -360,6 +368,7 @@ void setup() {
         return;
     }
     Serial.printf("[READY] server ok: %s\n", ready.body.c_str());
+#endif
 
     // 短いウェーブの後、Idle 表情へ
     delay(700);
@@ -387,7 +396,10 @@ void loop() {
                 setState(State::Listening, faces::FACE_LISTENING);
                 break;
             }
+#if !defined(OFFLINE_MODE) || !OFFLINE_MODE
             // 待機中: スケジュール発話 / 外部 push を取りにいく (wait=0 即時応答)
+            // OFFLINE_MODE では WiFi が未初期化のため pull を呼ぶと
+            // HTTPClient が semaphore assert で crash → ループ再起動するので塞ぐ。
             if (millis() - g_last_pull_ms >= PULL_INTERVAL_MS) {
                 g_last_pull_ms = millis();
                 PullResponse pr = ChatClient::pull(0);
@@ -402,6 +414,7 @@ void loop() {
                     setState(State::Idle, faces::FACE_IDLE);
                 }
             }
+#endif
             // 何もない時はまばたき + マイクロ表情を刻む
             updateIdleBlink();
             updateIdleMicro();
@@ -422,6 +435,15 @@ void loop() {
                 }
                 const size_t n = g_rec.stop();
                 setState(State::Thinking, faces::FACE_THINKING);
+#if defined(OFFLINE_MODE) && OFFLINE_MODE
+                // OFFLINE: HTTP 呼び出しせず、考えてるフリ → ack → 笑顔 → Idle
+                Serial.printf("[OFFLINE] recorded %u bytes (would POST /chat)\n",
+                              (unsigned)n);
+                delay(800);
+                playAckBeep();
+                g_face.show(faces::F_SOFT_SMILE);
+                delay(600);
+#else
                 ChatResponse r = ChatClient::send(g_rec.data(), n);
                 if (r.ok) {
                     Serial.printf("[USER] %s\n", r.user_text.c_str());
@@ -442,6 +464,7 @@ void loop() {
                 } else {
                     handleHttpError(r.http_status);
                 }
+#endif
                 setState(State::Idle, faces::FACE_IDLE);
             }
             break;

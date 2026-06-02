@@ -51,13 +51,15 @@ public:
         std::snprintf(path, sizeof(path), "/face_%02d.jpg", n);
         const int dx = (M5.Display.width()  - kSize) / 2;
         const int dy = (M5.Display.height() - kSize) / 2;
-        fs::File file = LittleFS.open(path, "r");
-        if (!file) {
-            log_e("%s not found", path);
-            return;
+        // M5GFX (Arduino-ESP32 v3.x / IDF v5.x) では File* を取る drawJpg
+        // オーバーロードが廃止。drawJpgFile(<fs>, path, ...) のテンプレート
+        // 版に切り替える。
+        // 注意: この呼び出しが効くには、main.cpp 側で LittleFS.h を
+        // M5Unified.h より先に include しておく必要がある (M5GFX 内部の
+        // DataWrapperT<LittleFSFS> 特殊化が _LITTLEFS_H_ で gate されているため)。
+        if (!M5.Display.drawJpgFile(LittleFS, path, dx, dy)) {
+            log_e("drawJpgFile failed: %s", path);
         }
-        M5.Display.drawJpg(&file, dx, dy);
-        file.close();
     }
 
     int current() const { return current_; }

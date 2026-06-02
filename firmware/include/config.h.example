@@ -46,3 +46,11 @@ static constexpr uint8_t  SPK_VOLUME = 180; // 0..255
 // STT + LLM + TTS の合計を待つ。GPU やモデルサイズに応じて調整する。
 // 目安: MAX_REC_SECONDS * 1000 + LLM 最大 30000 + TTS 最大 15000。
 static constexpr uint32_t HTTP_TIMEOUT_MS = 55000;
+
+// ---- オフライン (kawaii 動作確認) 用テストモード ------------
+// 1 にすると WiFi 接続 / サーバ ready 確認 / 定期 pull / 録音後 send を
+// すべてスキップし、起動後すぐ Idle に入る。表情アニメ (まばたき / マイクロ
+// 表情 / 押下時の驚き) を WiFi なしで実機確認したい時用。
+// ボタン押下時は録音はするが、HTTP 送信はせず擬似的に「考えてる」表示 →
+// ack beep → 笑顔 → Idle の流れになる。本番運用時は 0 に戻す。
+#define OFFLINE_MODE 0
