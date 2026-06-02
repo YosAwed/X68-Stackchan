@@ -381,7 +381,26 @@ void setup() {
 void loop() {
     M5.update();
 
-    const bool pressed = M5.BtnA.isPressed();
+    // CoreS3 SE は物理ボタンが無く、M5Unified の virtual button マッピングも
+    // デフォルトでは効かない (touch 検知はできるが BtnA/B/C は発火しない)。
+    // ここでは M5.Touch を直接読んで「画面のどこかを触っていれば押下」と扱う。
+    // 厳密に BtnA 領域を区切りたい場合はここで t.x / t.y のチェックを足す。
+    bool pressed = false;
+    if (M5.Touch.getCount() > 0) {
+        const auto t = M5.Touch.getDetail(0);
+        pressed = t.isPressed();
+    }
+
+#if defined(OFFLINE_MODE) && OFFLINE_MODE
+    // 動作確認用ログ (タッチ Down/Release を 1 回ずつ流す)
+    {
+        static bool prev = false;
+        if (pressed != prev) {
+            Serial.printf("[TOUCH] %s\n", pressed ? "PRESS" : "RELEASE");
+            prev = pressed;
+        }
+    }
+#endif
 
     switch (g_state) {
         case State::Idle: {
