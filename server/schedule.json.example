@@ -1,0 +1,40 @@
+{
+  "triggers": [
+    {
+      "name": "morning_greet",
+      "cron": "0 8 * * *",
+      "kind": "llm",
+      "prompt": "おはよう。今日の朝の挨拶を一言だけしてくれる",
+      "sid": "scheduled"
+    },
+    {
+      "name": "lunch_reminder",
+      "cron": "30 12 * * *",
+      "kind": "fixed",
+      "text": "そろそろお昼の時間だよ、休憩しよう"
+    },
+    {
+      "name": "afternoon_chat",
+      "cron": "0 15 * * *",
+      "kind": "llm",
+      "prompt": "午後の眠くなる時間だね。短く励ましてくれる",
+      "sid": "scheduled"
+    },
+    {
+      "name": "evening_signoff",
+      "cron": "0 22 * * *",
+      "kind": "llm",
+      "prompt": "そろそろ寝る時間。X68 関連の小ネタを一言挨拶代わりに",
+      "sid": "scheduled"
+    },
+    {
+      "name": "miss_you",
+      "cron": "*/30 * * * *",
+      "kind": "llm",
+      "prompt": "しばらく話しかけてもらえてない。寂しがる雰囲気で一言、軽く呼びかけてみて",
+      "sid": "scheduled",
+      "silent_for_minutes": 180,
+      "check_sid": "stackchan-01"
+    }
+  ]
+}

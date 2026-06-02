@@ -1,0 +1,124 @@
+"""テキスト → 感情カテゴリの軽量分類器。
+
+ぺけ子ちゃんが喋るテキストに含まれるキーワード/語尾から、口パク中に
+使う表情を切り替えるためのヒントを返す。LLM や音声分析を介さず、
+シンプルな部分一致だけで判定する。
+
+返値はファーム側の face_map.h と握った 1 つのトークン文字列で、
+ASCII 英小文字 + ハイフンのみ (HTTP ヘッダで URL エンコードなしに送れる)。
+
+カテゴリと意図:
+    neutral     ふつう / 想定しないテキスト → 既定の口パク (微笑み / やる気)
+    joy         嬉しい・はしゃぐ系                  → 笑顔系
+    sad         悲しい・泣く系                       → 泣き系
+    embarrassed 困った・あやまる系                   → 困り系
+    confused    わからない・迷い系                   → 拗ね・はてな系
+    surprised   驚き・感動系                         → 驚き・キラキラ系
+    sleepy      眠い・あくび系                       → あくび・就寝系
+    confident   大丈夫・まかせて系                   → 自信・柔らか系
+"""
+
+from __future__ import annotations
+
+# 順序が大事: 上から順にマッチを取る。
+# 「意図がはっきりした語」を先に、汎用的に拾える語 (joy の X68 など) を最後に置く。
+# どれもヒットしなければ "neutral"。
+_RULES: list[tuple[str, tuple[str, ...]]] = [
+    # 困り・謝罪 — 直接的な表明なので最優先
+    ("embarrassed", (
+        "ごめん", "すまない", "申し訳", "もうしわけ",
+        "失礼", "あちゃ", "やっちゃった",
+    )),
+    # 困惑・迷い — 「えっと」フィラーを surprised の「えっ」より先に拾う
+    ("confused", (
+        "わからない", "分からない", "わかんない", "うーん", "うーーん",
+        "むずかしい", "難しい", "えーと", "えっと", "はてな",
+    )),
+    # 自信・励まし — joy の「ばっちり」より先に「まかせて/大丈夫」を勝たせる
+    ("confident", (
+        "まかせて", "任せて", "だいじょうぶ", "大丈夫", "もちろん",
+        "やってみる", "がんばる", "頑張る", "きっと",
+    )),
+    # 眠気
+    ("sleepy", (
+        "ねむい", "眠い", "あくび", "ふぁ〜", "ふぁー", "ぐぅ", "おやすみ",
+    )),
+    # 悲しみ
+    ("sad", (
+        "かなしい", "悲しい", "つらい", "辛い", "泣き", "しょんぼり",
+        "がっかり",
+    )),
+    # 驚き — 「なんと」は「なんとかなる」と紛らわしいので採用しない。
+    # 「えっ」は「えっと」とも衝突するため confused の後に置いてもまだ広いが、
+    # 「えええ」など強い形を優先。
+    ("surprised", (
+        # 「えっ」単独は「えっと」と衝突するので、句読点 / 終止形セットで判定
+        "えっ、", "えっ。", "えっ!", "えっ!", "えっ?", "えっ?",
+        "えええ", "まじで", "ほんと", "本当に", "すごい", "すっごい",
+        "やば", "びっくり", "わぉ", "おお、",
+    )),
+    # 喜び — 範囲が広いので最後 (X68 系のメンションを拾う)
+    ("joy", (
+        "やったー", "やった", "うれしい", "嬉しい", "わーい", "わあい",
+        "たのしい", "楽しい", "好き", "大好き", "最高", "ばっちり",
+        "X68", "x68", "Human68k", "human68k", "x68000", "X68000",
+    )),
+]
+
+VALID_CATEGORIES: tuple[str, ...] = (
+    "neutral",
+    "joy",
+    "sad",
+    "embarrassed",
+    "confused",
+    "surprised",
+    "sleepy",
+    "confident",
+)
+
+
+def classify(text: str) -> str:
+    """text を 1 つの感情カテゴリにマップする。未マッチなら 'neutral'。"""
+    if not text:
+        return "neutral"
+    lowered = text.lower()  # ascii の大小差を吸収 (日本語には影響なし)
+    for category, keywords in _RULES:
+        for kw in keywords:
+            if kw.lower() in lowered:
+                return category
+    return "neutral"
+
+
+# 「ユーザがぺけ子ちゃんを褒めた」を拾うためのキーワード。
+# bot 自身が言うのではなく、user_text にこれらが現れたら次の応答は
+# 「はにかむ」 = embarrassed として表情を上書きする。
+_PRAISE_KEYWORDS: tuple[str, ...] = (
+    "かわいい", "可愛い", "カワイイ",
+    "えらい", "偉い",
+    "すごい", "すっごい", "凄い", "スゴい",
+    "好きだよ", "好きだ", "大好き",
+    "賢い", "かしこい",
+    "ありがとう", "ありがと",
+    "助かった", "助かる",
+    "上手", "じょうず", "うまい", "うまかった",
+    "天才", "てんさい",
+)
+
+
+def is_praise(user_text: str) -> bool:
+    """user_text に褒め系の語が含まれているか。"""
+    if not user_text:
+        return False
+    lowered = user_text.lower()
+    return any(kw.lower() in lowered for kw in _PRAISE_KEYWORDS)
+
+
+def classify_reaction(user_text: str, bot_text: str) -> str:
+    """ユーザ発話とぺけ子応答の両方を見て表情カテゴリを決める。
+
+    user_text に褒め言葉があれば、bot_text の内容に関わらず
+    "embarrassed" (はにかむ) に倒す。それ以外は通常の classify(bot_text)。
+    """
+    if is_praise(user_text):
+        return "embarrassed"
+    return classify(bot_text)
