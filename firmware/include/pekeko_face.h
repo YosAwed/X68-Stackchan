@@ -60,6 +60,12 @@ public:
         if (!M5.Display.drawJpgFile(LittleFS, path, dx, dy)) {
             log_e("drawJpgFile failed: %s", path);
         }
+        // スプライトシートのセル区切りに当たる JPG は最下行 1px が真っ白
+        // (シートの白枠が残った状態) で焼かれている。画面の dark grey 帯と
+        // 隣接して水平な白い線として見えるので、最下行を bg で塗り潰す。
+        // 中央寄せされた顔本体の下端は y=232 付近まで上がっているため、この
+        // 1 ピクセル wipe では絵の情報は失われない。
+        M5.Display.drawFastHLine(dx, dy + kSize - 1, kSize, bg_);
     }
 
     int current() const { return current_; }
