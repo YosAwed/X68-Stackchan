@@ -442,16 +442,33 @@ void loop() {
             if (!pressed && !g_remote.btnA()) {
                 g_wait_release_after_auto_send = false;
             }
-            // 頭頂タッチが優先 (LCD タッチより先にチェック)。
-            if (M5StackChan.TouchSensor.wasPressed() && !g_wait_release_after_auto_send) {
-                playHeadpatChime();
-                const uint32_t now = millis();
-                g_headpat_start_ms = now;
-                g_headpat_last_press_ms = now;
-                M5StackChan.showRgbColor(180, 60, 100);
-                setState(State::Headpat, faces::F_BASHFUL);
-                Serial.println("[HEADPAT] start");
-                break;
+            // 頭頂タッチ: スワイプ優先、ホールドでなでなで (headpat)
+            // wasPressed() は即発火するためスワイプ判定と競合する。
+            // g_touch.update() に一本化して Swipe/Pet を区別する。
+            if (!g_wait_release_after_auto_send) {
+                const auto touch_ev = g_touch.update();
+                if (touch_ev == TouchHandler::Event::Swipe) {
+                    // スワイプ: 喜び表情 + 首振り + 黄色 LED バースト
+                    g_face.show(faces::FACE_SWIPE);
+#if RGB_ENABLED
+                    g_rgb.setScene(RgbScene::Swipe);
+#endif
+#if SERVO_ENABLED
+                    g_servo.startHappyWaggle();
+#endif
+                    playAckBeep();
+                    break;
+                } else if (touch_ev == TouchHandler::Event::Pet) {
+                    // ホールド: headpat 開始 (はにかみ → とろけ → 眠り)
+                    playHeadpatChime();
+                    const uint32_t now = millis();
+                    g_headpat_start_ms = now;
+                    g_headpat_last_press_ms = now;
+                    M5StackChan.showRgbColor(180, 60, 100);
+                    setState(State::Headpat, faces::F_BASHFUL);
+                    Serial.println("[HEADPAT] start");
+                    break;
+                }
             }
             // リモコン: ジョイスティックでサーボ手動操作
 #if SERVO_ENABLED
