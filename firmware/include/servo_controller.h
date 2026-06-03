@@ -47,10 +47,17 @@ public:
     bool begin() {
         Serial1.begin(SRV_BAUD, SERIAL_8N1, SRV_RX, SRV_TX);
         delay(200);
+#if defined(SERVO_RELAX_ONLY) && SERVO_RELAX_ONLY
+        torqueOff(ID_YAW);
+        torqueOff(ID_PITCH);
+        Serial.println("[SRV ] torque off (SERVO_RELAX_ONLY=1)");
+        return true;
+#else
         writePos(ID_YAW,   YAW_CTR,   500);
         writePos(ID_PITCH, PITCH_CTR, 500);
         last_idle_ms_ = millis();
         return true;
+#endif
     }
 
     // --------------------------------------------------------
@@ -97,6 +104,9 @@ public:
     //  毎ループ呼び出し (約 10 ms 周期)
     // --------------------------------------------------------
     void update() {
+#if defined(SERVO_RELAX_ONLY) && SERVO_RELAX_ONLY
+        return;
+#endif
         const uint32_t now = millis();
 
         // ハッピー首振りアニメーション (右→左→中央, 各 350 ms)
@@ -195,6 +205,35 @@ private:
         while (n < 13 && millis() - t0 < 10) {
             if (Serial1.available()) { Serial1.read(); n++; }
         }
+    }
+
+    void writeByte(uint8_t id, uint8_t addr, uint8_t value) {
+        uint8_t buf[7];
+        buf[0] = 0xFF;
+        buf[1] = 0xFF;
+        buf[2] = id;
+        buf[3] = 4;     // instr(1)+addr(1)+data(1)+chk(1)
+        buf[4] = 0x03;  // WRITE
+        buf[5] = addr;
+        buf[6] = value;
+        uint8_t chk = 0;
+        for (int i = 2; i < 7; i++) chk += buf[i];
+        const uint8_t checksum = ~chk;
+
+        Serial1.write(buf, 7);
+        Serial1.write(checksum);
+        Serial1.flush();
+
+        const uint32_t t0 = millis();
+        while (millis() - t0 < 10) {
+            while (Serial1.available()) Serial1.read();
+        }
+    }
+
+    void torqueOff(uint8_t id) {
+        // Feetech SCS/STS Torque Enable register.
+        static constexpr uint8_t ADDR_TORQUE_ENABLE = 0x28;
+        writeByte(id, ADDR_TORQUE_ENABLE, 0);
     }
 };
 

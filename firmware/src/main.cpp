@@ -17,7 +17,9 @@
 // I/O expander + RGB + TouchSensor をまとめて初期化、loop で update() を
 // 呼ぶと M5StackChan.TouchSensor が Button_Class 互換で wasPressed() などを
 // 提供する。
+#if STACKCHAN_BSP_ENABLED
 #include <M5StackChan.h>
+#endif
 #include <esp_random.h>
 #include <cmath>
 #include <cstdint>
@@ -229,6 +231,22 @@ static bool connectWiFi() {
     return true;
 }
 
+static bool ensureSpeakerReady() {
+    if (!M5.Speaker.isEnabled()) {
+        Serial.println("[AUD ] speaker is disabled");
+        return false;
+    }
+    if (!M5.Speaker.isRunning()) {
+        if (!M5.Speaker.begin()) {
+            Serial.println("[AUD ] speaker begin failed");
+            return false;
+        }
+        delay(20);
+    }
+    M5.Speaker.setVolume(SPK_VOLUME);
+    return true;
+}
+
 // 応答 WAV を再生しながら、PCM の RMS で口パク (口閉/口開/大開 3 段階)
 static void playWavWithLipsync(const uint8_t* wav, size_t size,
                                const char* emote = nullptr) {
@@ -266,17 +284,32 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size,
         }
     }
     if (wav_bits != 16 || wav_channels == 0 || wav_block < 2) {
-        M5.Speaker.setVolume(SPK_VOLUME);
-        M5.Speaker.playWav(wav, size);
+        if (!ensureSpeakerReady()) return;
+        if (!M5.Speaker.playWav(wav, size, 1, -1, true)) {
+            Serial.printf("[AUD ] playWav failed (fmt bits=%u channels=%u block=%u size=%u)\n",
+                          wav_bits, wav_channels, wav_block, (unsigned)size);
+            return;
+        }
         while (M5.Speaker.isPlaying()) delay(4);
         return;
     }
     pcm_bytes -= pcm_bytes % wav_block;
     const size_t frames = pcm_bytes / wav_block;
 
-    M5.Speaker.setVolume(SPK_VOLUME);
+    if (!ensureSpeakerReady()) return;
     const uint32_t t0 = millis();
-    M5.Speaker.playWav(wav, size);
+    if (!M5.Speaker.playWav(wav, size, 1, -1, true)) {
+        Serial.printf("[AUD ] playWav failed (sr=%u bits=%u channels=%u bytes=%u)\n",
+                      (unsigned)wav_sr, wav_bits, wav_channels, (unsigned)size);
+        return;
+    }
+    Serial.printf("[AUD ] playWav sr=%u bits=%u channels=%u bytes=%u ms<=%u\n",
+                  (unsigned)wav_sr, wav_bits, wav_channels, (unsigned)size,
+                  (unsigned)(wav_sr ? ((frames * 1000ULL) / wav_sr) : 0));
+    const uint32_t max_play_ms =
+        (wav_sr > 0 && frames > 0)
+            ? (uint32_t)((frames * 1000ULL) / wav_sr) + 2000U
+            : 30000U;
 
     // 3 段階閾値: <LOW=口閉じ、<HIGH=口開け、>=HIGH=大開け (climax 音節)
     // RMS_THRESH=2200 の旧運用と同等の頻度で open が出る帯域に挟む。
@@ -292,7 +325,7 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size,
     int face_wide  = faces::FACE_SPEAK_WIDE;
     faces::resolve_speak_triple(emote, face_close, face_open, face_wide);
 
-    while (M5.Speaker.isPlaying()) {
+    while (M5.Speaker.isPlaying() && millis() - t0 < max_play_ms) {
         const uint32_t now = millis();
         if (now - last_update >= 40) {           // 25 fps 相当で更新
             last_update = now;
@@ -328,6 +361,10 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size,
         }
         delay(4);
     }
+    if (M5.Speaker.isPlaying()) {
+        Serial.printf("[WARN] speaker playback timeout (%ums)\n", (unsigned)max_play_ms);
+        M5.Speaker.stop();
+    }
     // 締めは口閉じ (emote ペアに合わせる)
     g_face.show(face_close);
 }
@@ -355,11 +392,23 @@ static void handleHttpError(int status) {
 
 void setup() {
     auto cfg = M5.config();
+    cfg.internal_spk = true;
+    cfg.internal_mic = true;
+    cfg.output_power = true;
     M5.begin(cfg);
     // 公式 StackChan キット拡張 (I/O expander, RGB, 頭頂 Si12T タッチ) を初期化。
     // M5Unified 配下の I2C バスをそのまま借りるので順序的に M5.begin() の後で。
+#if STACKCHAN_BSP_ENABLED
     M5StackChan.begin();
+#endif
     Serial.begin(115200);
+    Serial.printf("[M5  ] board=%d speaker=%d mic=%d\n",
+                  (int)M5.getBoard(),
+                  M5.Speaker.isEnabled() ? 1 : 0,
+                  M5.Mic.isEnabled() ? 1 : 0);
+    if (!M5.Speaker.isEnabled()) {
+        Serial.println("[WARN] speaker disabled by M5Unified");
+    }
 
     // (1) Human68k 風スプラッシュ + 起動チャイム (画面と音は同時進行)
     playBootChime();
@@ -415,7 +464,9 @@ void setup() {
 
 void loop() {
     M5.update();
+#if STACKCHAN_BSP_ENABLED
     M5StackChan.update();   // 頭頂タッチセンサー (Si12T) のポーリング
+#endif
 
     // CoreS3 SE は物理ボタンが無く、M5Unified の virtual button マッピングも
     // デフォルトでは効かない (touch 検知はできるが BtnA/B/C は発火しない)。
@@ -446,6 +497,7 @@ void loop() {
             // wasPressed() は即発火するためスワイプ判定と競合する。
             // g_touch.update() に一本化して Swipe/Pet を区別する。
             if (!g_wait_release_after_auto_send) {
+#if HEAD_TOUCH_ENABLED
                 const auto touch_ev = g_touch.update();
                 if (touch_ev == TouchHandler::Event::Swipe) {
                     // スワイプ: 喜び表情 + 首振り + 黄色 LED バースト
@@ -469,6 +521,7 @@ void loop() {
                     Serial.println("[HEADPAT] start");
                     break;
                 }
+#endif
             }
             // リモコン: ジョイスティックでサーボ手動操作
 #if SERVO_ENABLED
@@ -566,6 +619,7 @@ void loop() {
         }
 
         case State::Headpat: {
+#if HEAD_TOUCH_ENABLED && STACKCHAN_BSP_ENABLED
             // 「撫でる」動きで Si12T が一瞬 0 強度を返すことがあるので、
             // 500ms 以上タッチが途切れない限り Headpat を継続するヒステリシス。
             const uint32_t now = millis();
@@ -627,6 +681,9 @@ void loop() {
                 b = (uint8_t)(200 * pulse);
             }
             M5StackChan.showRgbColor(r, g, b);
+#else
+            setState(State::Idle, faces::FACE_IDLE);
+#endif
             break;
         }
 

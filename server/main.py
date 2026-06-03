@@ -94,6 +94,17 @@ async def _prewarm_tts():
         log.exception("TTS pre-warm failed (continuing without warm cache)")
 
 
+async def _prewarm_stt():
+    """起動後の空き時間に Whisper をロードして初回 PTT の待ち時間を潰す。"""
+    try:
+        log.info("STT pre-warm: loading Whisper model ...")
+        t0 = time.perf_counter()
+        await asyncio.to_thread(stt.warmup)
+        log.info("STT pre-warm done in %.0f ms", (time.perf_counter() - t0) * 1000)
+    except Exception:
+        log.exception("STT pre-warm failed (continuing with lazy load)")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _scheduler
@@ -102,6 +113,8 @@ async def lifespan(app: FastAPI):
     if os.getenv("TTS_PREWARM", "1") == "1":
         # 別タスクで走らせて lifespan の yield を待たせない (起動を遅らせない)。
         asyncio.create_task(_prewarm_tts())
+    if os.getenv("STT_PREWARM", "1") == "1":
+        asyncio.create_task(_prewarm_stt())
     if os.getenv("SCHEDULE_ENABLED", "0") == "1":
         path = Path(os.getenv("SCHEDULE_FILE", "schedule.json"))
         # silent_for_minutes 条件付きトリガが LLM の履歴 DB を参照できるように、
