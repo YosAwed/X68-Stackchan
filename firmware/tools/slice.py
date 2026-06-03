@@ -15,7 +15,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from clean_face_labels import clean_file
+from face_postprocess import postprocess_image
 
 HERE = Path(__file__).resolve().parent          # firmware/tools/
 FIRMWARE = HERE.parent                          # firmware/
@@ -66,8 +66,8 @@ def main() -> None:
         img = Image.open(sheet).convert("RGB")
         for cell in slice_grid(img):
             out = OUT_DIR / f"face_{idx:02d}.jpg"
+            cell = postprocess_image(cell)
             cell.save(out, "JPEG", quality=92, optimize=True, progressive=False)
-            clean_file(out)
             idx += 1
 
     total = sum((OUT_DIR / f"face_{i:02d}.jpg").stat().st_size for i in range(1, 37))
