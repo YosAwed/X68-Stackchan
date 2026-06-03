@@ -1,0 +1,19 @@
+// ========================================================
+//  リモコン (StickC-Plus) 設定
+//  cp config.h.example config.h して自分の環境に合わせる
+//  config.h は .gitignore で除外すること
+// ========================================================
+#pragma once
+
+// ---- Wi-Fi (チャンネル同期用。StackChan と同じ AP に接続すること) ------
+static constexpr const char* WIFI_SSID = "your-ssid";
+static constexpr const char* WIFI_PASS = "your-password";
+
+// ---- 送信先 MAC アドレス -----------------------------------------------
+// ブロードキャスト (FF:FF:FF:FF:FF:FF) を使えばペアリング不要。
+// StackChan 固定のみに絞りたい場合は起動ログの "WiFi connected:" 行で
+// StackChan の MAC を確認し、ここに書く。
+static constexpr uint8_t TARGET_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+// ---- 送信間隔 (ms) -----------------------------------------------------
+static constexpr uint32_t TX_INTERVAL_MS = 50;

@@ -31,6 +31,7 @@ from urllib.parse import quote
 
 from dotenv import load_dotenv
 from emote import classify as classify_emote
+from emote import classify_reaction
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, Response
 from llm import LLM
@@ -38,6 +39,7 @@ from scheduler import Scheduler
 from stt import STT
 from tts import TTS
 from utterance_queue import Utterance, UtteranceQueue
+from wav_cache import WavCache
 
 load_dotenv()
 
@@ -61,11 +63,16 @@ llm = LLM(
     temperature=float(os.getenv("OLLAMA_TEMPERATURE", "0.7")),
     num_predict=int(os.getenv("OLLAMA_NUM_PREDICT", "200")),
     max_sessions=int(os.getenv("MAX_SESSIONS", "16")),
+    history_db=os.getenv("LLM_HISTORY_DB") or None,
 )
 tts = TTS()  # backend / env 解釈は tts.py + tts_<backend>.py に委譲
 
 queue = UtteranceQueue(max_size=int(os.getenv("QUEUE_MAX_SIZE", "16")))
 ENQUEUE_TOKEN = os.getenv("ENQUEUE_TOKEN", "")
+wav_cache = WavCache(
+    dir=os.getenv("TTS_CACHE_DIR") or None,
+    version=os.getenv("TTS_CACHE_VERSION", "v1"),
+)
 _scheduler: Scheduler | None = None
 
 
@@ -97,7 +104,13 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_prewarm_tts())
     if os.getenv("SCHEDULE_ENABLED", "0") == "1":
         path = Path(os.getenv("SCHEDULE_FILE", "schedule.json"))
-        _scheduler = Scheduler.from_file(path, llm, tts, queue)
+        # silent_for_minutes 条件付きトリガが LLM の履歴 DB を参照できるように、
+        # LLM が永続化を有効にしている時だけ history_store を Scheduler に渡す。
+        _scheduler = Scheduler.from_file(
+            path, llm, tts, queue,
+            wav_cache=wav_cache,
+            history_store=getattr(llm, "_store", None),
+        )
         await _scheduler.start()
     else:
         log.info("scheduler disabled (set SCHEDULE_ENABLED=1 to enable)")
@@ -125,17 +138,20 @@ def _wav_response(
     bot_text: str,
     timings: dict[str, float],
 ) -> Response:
+    # ユーザ発話に褒め言葉が含まれていれば embarrassed (はにかみ) に倒す。
+    # 無い時は通常通り bot_text を分類。
+    emote = classify_reaction(user_text or "", bot_text)
     headers = {
         "X-Stackchan-Bot-Text": quote(bot_text),
         "X-Stackchan-Timing": _timing_header(timings),
         "X-Stackchan-TTS-Backend": os.getenv("TTS_BACKEND", "irodori"),
         # CoreS3 側で口パク用の表情ペアを切り替えるためのヒント。
         # neutral/joy/sad/embarrassed/confused/surprised/sleepy/confident の英小文字。
-        "X-Stackchan-Emote": classify_emote(bot_text),
+        "X-Stackchan-Emote": emote,
     }
     if user_text is not None:
         headers["X-Stackchan-User-Text"] = quote(user_text)
-    log.info("timing %s emote=%s", headers["X-Stackchan-Timing"], headers["X-Stackchan-Emote"])
+    log.info("timing %s emote=%s", headers["X-Stackchan-Timing"], emote)
     return Response(content=wav, media_type="audio/wav", headers=headers)
 
 
@@ -321,7 +337,15 @@ async def enqueue(
             bot_text = text
         if not bot_text:
             raise HTTPException(500, "empty bot_text after LLM")
-        wav = await asyncio.to_thread(tts.synthesize, bot_text)
+        # 非 LLM 経路は text が不変なのでディスクキャッシュを通す。
+        # LLM 経路は応答が毎回違うのでキャッシュしない。
+        cached = wav_cache.get(bot_text) if not via_llm else None
+        if cached is not None:
+            wav = cached
+        else:
+            wav = await asyncio.to_thread(tts.synthesize, bot_text)
+            if not via_llm:
+                wav_cache.put(bot_text, wav)
         emote = classify_emote(bot_text)
         ok = reservation.commit(Utterance(
             wav=wav,

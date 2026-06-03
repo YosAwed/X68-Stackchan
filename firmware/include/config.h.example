@@ -36,6 +36,13 @@ static constexpr uint32_t MAX_REC_SECONDS = 10;
 // ---- スピーカ -----------------------------------------------
 static constexpr uint8_t  SPK_VOLUME = 180; // 0..255
 
+// ---- RGB LED (WS2812C x12) ----------------------------------
+// データピンは実機で確認して調整する (StackChan 基板固定)
+// 使わない場合は RGB_ENABLED を 0 にする。
+#define RGB_ENABLED  1
+#define RGB_DATA_PIN 9    // 要実機確認 — 違う場合はここを変える
+#define RGB_NUM_LEDS 12
+
 // ---- サーボ (首振り) ----------------------------------------
 // SCS0009 シリアルサーボ x2。StackChan 基板経由で GPIO6/7 固定。
 // サーボを使わない場合は SERVO_ENABLED を 0 にする。
@@ -46,3 +53,11 @@ static constexpr uint8_t  SPK_VOLUME = 180; // 0..255
 // STT + LLM + TTS の合計を待つ。GPU やモデルサイズに応じて調整する。
 // 目安: MAX_REC_SECONDS * 1000 + LLM 最大 30000 + TTS 最大 15000。
 static constexpr uint32_t HTTP_TIMEOUT_MS = 55000;
+
+// ---- オフライン (kawaii 動作確認) 用テストモード ------------
+// 1 にすると WiFi 接続 / サーバ ready 確認 / 定期 pull / 録音後 send を
+// すべてスキップし、起動後すぐ Idle に入る。表情アニメ (まばたき / マイクロ
+// 表情 / 押下時の驚き) を WiFi なしで実機確認したい時用。
+// ボタン押下時は録音はするが、HTTP 送信はせず擬似的に「考えてる」表示 →
+// ack beep → 笑顔 → Idle の流れになる。本番運用時は 0 に戻す。
+#define OFFLINE_MODE 0

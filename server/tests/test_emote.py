@@ -58,3 +58,43 @@ def test_classify_is_case_insensitive_for_ascii():
 
 def test_valid_categories_includes_neutral():
     assert "neutral" in VALID_CATEGORIES
+
+
+# ---- classify_reaction (照れ反応) ----
+
+
+import pytest as _pytest  # noqa: E402
+from emote import classify_reaction, is_praise  # noqa: E402
+
+
+@_pytest.mark.parametrize("user_text,expected_praise", [
+    ("かわいいね", True),
+    ("えらい!", True),
+    ("すごいよぺけ子ちゃん", True),
+    ("好きだよ", True),
+    ("ありがとう、助かった", True),
+    ("天才じゃない?", True),
+    # 普通の質問は褒めではない
+    ("今日の天気は?", False),
+    ("X68 のこと教えて", False),
+    ("", False),
+])
+def test_is_praise_detection(user_text: str, expected_praise: bool):
+    assert is_praise(user_text) is expected_praise
+
+
+def test_classify_reaction_returns_embarrassed_when_user_praises():
+    # bot 応答が joy 系でも、user の褒め言葉が優先される
+    assert classify_reaction("かわいいね!", "やったー、嬉しい") == "embarrassed"
+
+
+def test_classify_reaction_falls_through_when_no_praise():
+    # 褒めがない時は通常通り bot_text を分類
+    assert classify_reaction("今日のごはん", "やったー、楽しいよ") == "joy"
+    assert classify_reaction("どう?", "ごめん、わからない") == "embarrassed"  # bot 側の謝罪
+    assert classify_reaction("", "そうだね") == "neutral"
+
+
+def test_classify_reaction_empty_user_text_safe():
+    # user_text=None でも例外を投げない (main.py から空文字で渡される)
+    assert classify_reaction("", "やった") == "joy"

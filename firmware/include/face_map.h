@@ -57,6 +57,8 @@ inline constexpr int FACE_BOOT_DONE     = F_WAVE;
 inline constexpr int FACE_IDLE          = F_NEUTRAL;
 // 長時間放置 (未使用、将来用)
 inline constexpr int FACE_IDLE_LONG     = F_SLEEPING;
+// まばたきで一瞬挟む顔 (Idle 中に短時間表示してすぐ FACE_IDLE に戻す)
+inline constexpr int FACE_BLINK         = F_LAUGH_EYES_CLOSED;
 // 録音中
 inline constexpr int FACE_LISTENING     = F_QUESTION;
 // サーバ問い合わせ中
@@ -65,9 +67,11 @@ inline constexpr int FACE_THINKING      = F_THINKING_POSE;
 inline constexpr int FACE_THINKING_LONG = F_BORED;
 // 無音だった (no-speech 応答)
 inline constexpr int FACE_NO_SPEECH     = F_EMBARRASSED;
-// 口パク (発話中) — neutral 既定
+// 口パク (発話中) — neutral 既定。3 段階運用 (静か / 通常 / 大声) で
+// 大声の音節 (例: 文末の「〜だよっ!」) に "wide" 顔を当てる。
 inline constexpr int FACE_SPEAK_CLOSED  = F_SMILE;       // 口閉じ
 inline constexpr int FACE_SPEAK_OPEN    = F_DETERMINED;  // 口開け (目は維持)
+inline constexpr int FACE_SPEAK_WIDE    = F_JOY;         // 大開け / 笑い climax
 
 // ---- 感情ごとの口パクペア ----
 // サーバから X-Stackchan-Emote で受け取ったタグに応じて、発話中の口パク
@@ -88,6 +92,13 @@ inline constexpr int FACE_EMOTE_SLEEPY_CLOSED      = F_SLEEPING;          // 09 
 inline constexpr int FACE_EMOTE_SLEEPY_OPEN        = F_YAWN_SMALL;        // 18 あくび
 inline constexpr int FACE_EMOTE_CONFIDENT_CLOSED   = F_SOFT_SMILE;        // 11 やわらか
 inline constexpr int FACE_EMOTE_CONFIDENT_OPEN     = F_CONFIDENT;         // 19 自信
+
+// ---- 3 段階口パクの "wide" (大声音節) 顔 ----
+// 大半の emote は wide = open のまま (resolve_speak_triple 側で既定処理)。
+// ここで定義するのは「2 段目より更にエスカレートする顔」を持つものだけ。
+inline constexpr int FACE_EMOTE_SURPRISED_WIDE     = F_SHOCKED;           // 26 ショック
+inline constexpr int FACE_EMOTE_EMBARRASSED_WIDE   = F_FLUSTERED;         // 32 あたふた
+inline constexpr int FACE_EMOTE_SLEEPY_WIDE        = F_YAWN_HAND;         // 35 大あくび
 
 // emote タグ → (open, closed) のペアを返す軽量ルックアップ。
 // `out_open` / `out_closed` に書き戻す。未知タグなら既定値のまま。
@@ -113,14 +124,35 @@ inline void resolve_speak_pair(const char* emote,
                                               out_closed = FACE_EMOTE_CONFIDENT_CLOSED; }
     // "neutral" やその他は既定値のまま
 }
+
+// 3 段階口パク (closed / open / wide) を返す。wide は大声音節 (RMS が高い瞬間)
+// に当てる顔。既定では wide = open になり、上で WIDE が定義された emote
+// のみ独自の顔に上書きされる。neutral (emote 空) では既定の F_JOY を使う。
+inline void resolve_speak_triple(const char* emote,
+                                 int& out_closed, int& out_open, int& out_wide) {
+    // まず既存ペア解決に委譲して closed / open を決める。
+    resolve_speak_pair(emote, out_open, out_closed);
+    // wide の既定: emote 無しなら専用の FACE_SPEAK_WIDE、それ以外は open と同じ。
+    out_wide = (!emote || !*emote) ? FACE_SPEAK_WIDE : out_open;
+    // エスカレーション顔を持つ emote のみ wide を上書き。
+    if (!emote || !*emote) return;
+    if      (!strcmp(emote, "surprised"))   out_wide = FACE_EMOTE_SURPRISED_WIDE;
+    else if (!strcmp(emote, "embarrassed")) out_wide = FACE_EMOTE_EMBARRASSED_WIDE;
+    else if (!strcmp(emote, "sleepy"))      out_wide = FACE_EMOTE_SLEEPY_WIDE;
+    // joy / sad / confused / confident / neutral 以外は wide = open のまま
+}
 // エラー系
-inline constexpr int FACE_ERR_WIFI      = F_FLUSTERED;
-inline constexpr int FACE_ERR_HTTP      = F_PANIC;
+inline constexpr int FACE_ERR_WIFI      = F_CONCERNED;
+inline constexpr int FACE_ERR_HTTP      = F_CONCERNED;
 inline constexpr int FACE_ERR_GENERIC   = F_SHOCKED;
 inline constexpr int FACE_ERR_TOO_LARGE = F_EMBARRASSED; // 413: 録音が長すぎた
 inline constexpr int FACE_ERR_SERVER    = F_DIZZY;       // 5xx: サーバ内部エラー
 inline constexpr int FACE_ERR_TIMEOUT   = F_BORED;       // 接続失敗/タイムアウト
 inline constexpr int FACE_REC_OVERFLOW  = F_SURPRISED;   // 録音上限到達
+// インタラクション
+inline constexpr int FACE_PET           = F_BASHFUL;     // なでなで (ホールド) → はにかみ
+inline constexpr int FACE_SWIPE         = F_JOY;         // スワイプ撫で → 喜び (目閉じ口開け)
+inline constexpr int FACE_SHAKEN        = F_DIZZY;       // シェイク → 目回し
 
 } // namespace faces
 } // namespace stackchan

@@ -11,6 +11,7 @@
     #   DISCORD_TOKEN      ... bot トークン
     #   DISCORD_GUILD_ID   ... 反映を即時化したい guild の ID (省略可)
     #   STACKCHAN_URL      ... http://192.168.1.42:8000 など、母艦の URL
+    #   STACKCHAN_ENQUEUE_TOKEN ... 母艦 server/.env の ENQUEUE_TOKEN と同じ値
 
 実行:
     python examples/discord_bot.py
@@ -63,6 +64,7 @@ load_dotenv(ENV_PATH)
 
 DISCORD_TOKEN = os.environ["DISCORD_TOKEN"]
 STACKCHAN_URL = os.getenv("STACKCHAN_URL", "http://192.168.1.42:8000").rstrip("/")
+STACKCHAN_ENQUEUE_TOKEN = os.getenv("STACKCHAN_ENQUEUE_TOKEN", "")
 GUILD_ID = os.getenv("DISCORD_GUILD_ID")  # 省略可。あればコマンド即時反映
 HTTP_TIMEOUT_S = float(os.getenv("STACKCHAN_TIMEOUT_S", "60"))
 
@@ -74,10 +76,13 @@ tree = app_commands.CommandTree(client)
 
 async def _enqueue(text: str, via_llm: bool, sid: str) -> dict:
     """母艦の /enqueue を叩いて結果を返す。"""
+    if not STACKCHAN_ENQUEUE_TOKEN:
+        raise RuntimeError("STACKCHAN_ENQUEUE_TOKEN is required")
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_S) as cli:
         r = await cli.post(
             f"{STACKCHAN_URL}/enqueue",
             data={"text": text, "via_llm": str(via_llm).lower(), "sid": sid},
+            headers={"X-Stackchan-Token": STACKCHAN_ENQUEUE_TOKEN},
         )
         r.raise_for_status()
         return r.json()
