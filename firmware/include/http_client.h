@@ -63,15 +63,46 @@ public:
             r.http_status = status.substring(sp1 + 1, sp2).toInt();
         }
 
-        bool in_body = false;
+        size_t resp_len = 0;
         uint32_t deadline = millis() + 5000;
         while ((client.connected() || client.available()) && millis() < deadline) {
             String line = client.readStringUntil('\n');
-            if (!in_body) {
-                if (line == "\r" || line.length() == 0) in_body = true;
-                continue;
+            if (line == "\r" || line.length() == 0) break;
+            line.trim();
+            const int colon = line.indexOf(':');
+            if (colon <= 0) continue;
+
+            String name = line.substring(0, colon);
+            String value = line.substring(colon + 1);
+            name.toLowerCase();
+            value.trim();
+            if (name == "content-length") {
+                resp_len = (size_t)value.toInt();
             }
-            if (r.body.length() < 4096) r.body += line;
+        }
+
+        if (resp_len > 0) {
+            r.body.reserve(resp_len);
+            size_t got = 0;
+            deadline = millis() + 5000;
+            while (got < resp_len && millis() < deadline) {
+                while (client.available() && got < resp_len) {
+                    const char c = (char)client.read();
+                    if (r.body.length() < 4096) r.body += c;
+                    ++got;
+                }
+                if (got < resp_len) delay(1);
+            }
+        } else {
+            deadline = millis() + 1000;
+            while ((client.connected() || client.available()) && millis() < deadline) {
+                while (client.available()) {
+                    const char c = (char)client.read();
+                    if (r.body.length() < 4096) r.body += c;
+                }
+                if (!client.connected()) break;
+                delay(1);
+            }
         }
         r.ok = (r.http_status == 200) &&
                (r.body.indexOf("\"ok\":true") >= 0 ||

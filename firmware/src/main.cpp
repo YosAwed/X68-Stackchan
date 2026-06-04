@@ -157,7 +157,7 @@ static void setState(State s, int face_id = -1) {
         g_blink_started_ms = 0;
         g_micro_started_ms = 0;
     }
-#if SERVO_ENABLED
+#if SERVO_ENABLED && (!defined(SERVO_RELAX_ONLY) || !SERVO_RELAX_ONLY)
     switch (s) {
         case State::Idle:      g_servo.goIdle();      break;
         case State::Listening: g_servo.goListening(); break;
@@ -236,13 +236,14 @@ static bool ensureSpeakerReady() {
         Serial.println("[AUD ] speaker is disabled");
         return false;
     }
-    if (!M5.Speaker.isRunning()) {
-        if (!M5.Speaker.begin()) {
-            Serial.println("[AUD ] speaker begin failed");
-            return false;
-        }
-        delay(20);
+    M5.Speaker.stop();
+    M5.Speaker.end();
+    delay(30);
+    if (!M5.Speaker.begin()) {
+        Serial.println("[AUD ] speaker begin failed");
+        return false;
     }
+    delay(30);
     M5.Speaker.setVolume(SPK_VOLUME);
     return true;
 }

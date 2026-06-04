@@ -144,6 +144,16 @@ def _timing_header(timings: dict[str, float]) -> str:
     return ",".join(f"{k};dur={v:.1f}" for k, v in timings.items())
 
 
+def _limit_spoken_text(text: str) -> str:
+    """CoreS3 playback stays more reliable with short response WAVs."""
+    limit = int(os.getenv("MAX_SPEAK_CHARS", "70"))
+    text = " ".join(text.strip().split())
+    if limit <= 0 or len(text) <= limit:
+        return text
+    cut = text[:limit].rstrip("、。,.!?！？ ")
+    return cut + "。"
+
+
 def _wav_response(
     wav: bytes,
     *,
@@ -227,7 +237,7 @@ async def chat(
     else:
         try:
             t0 = time.perf_counter()
-            bot_text = llm.chat(sid, user_text)
+            bot_text = _limit_spoken_text(llm.chat(sid, user_text))
             timings["llm"] = _elapsed_ms(t0)
         except Exception as e:
             log.exception("LLM failed")
@@ -277,7 +287,7 @@ def chat_text(text: str = Form(...), sid: str = Form("default")):
         raise HTTPException(status_code=400, detail="text is empty")
     try:
         t0 = time.perf_counter()
-        bot_text = llm.chat(sid, text)
+        bot_text = _limit_spoken_text(llm.chat(sid, text))
         timings["llm"] = _elapsed_ms(t0)
     except Exception as e:
         log.exception("LLM failed")
