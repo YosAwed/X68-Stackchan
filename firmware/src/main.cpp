@@ -13,6 +13,7 @@
 // な抽象クラスを実体化しようとして main.cpp.o が落ちる。
 #include <LittleFS.h>
 #include <M5Unified.h>
+#include "config.h"
 // 頭頂タッチセンサー (Si12T, I2C) を扱う公式 BSP。M5StackChan.begin() で
 // I/O expander + RGB + TouchSensor をまとめて初期化、loop で update() を
 // 呼ぶと M5StackChan.TouchSensor が Button_Class 互換で wasPressed() などを
@@ -25,7 +26,6 @@
 #include <cstdint>
 #include <cstring>
 
-#include "config.h"
 #include "avatar_state.h"
 #include "audio_recorder.h"
 #include "http_client.h"
