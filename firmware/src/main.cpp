@@ -25,6 +25,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <time.h>
 
 #include "avatar_state.h"
 #include "audio_recorder.h"
@@ -52,6 +53,8 @@ static uint32_t       g_last_mic_log_ms = 0;
 static uint32_t       g_last_pull_ms    = 0;
 static uint32_t       g_status_overlay_until_ms = 0;
 static bool           g_status_overlay_visible  = false;
+static uint32_t       g_last_ready_ok_ms = 0;
+static String         g_caption_text;
 
 // ---- Idle 中のまばたき ----
 // 4〜8 秒のランダム間隔で目を閉じた表情 (FACE_BLINK) を 150 ms 表示する。
@@ -85,7 +88,32 @@ static inline void scheduleNextMicro() {
     g_micro_started_ms = 0;
 }
 
+static bool isNightMode() {
+    struct tm tm;
+    if (!getLocalTime(&tm, 5)) return false;
+    return tm.tm_hour >= 22 || tm.tm_hour < 7;
+}
+
+static int idleBaseFace() {
+    return isNightMode() ? faces::F_SLEEPING : faces::FACE_IDLE;
+}
+
 static int pickIdleMicroFace() {
+    if (isNightMode()) {
+        static const int kSleepyFaces[] = {
+            faces::F_SLEEPING,
+            faces::F_YAWN_SMALL,
+            faces::F_YAWN_HAND,
+            faces::F_BORED,
+            faces::F_RELIEVED,
+        };
+        constexpr int kN = sizeof(kSleepyFaces) / sizeof(kSleepyFaces[0]);
+        int next = kSleepyFaces[rand() % kN];
+        if (next == g_last_micro_face) next = kSleepyFaces[(rand() + 1) % kN];
+        g_last_micro_face = next;
+        return next;
+    }
+
     static const int kMicroFaces[] = {
         faces::F_NEUTRAL,
         faces::F_SMILE,
@@ -153,7 +181,7 @@ static inline void updateIdleBlink() {
     const uint32_t now = millis();
     if (g_blink_started_ms != 0) {
         if (now - g_blink_started_ms >= BLINK_HOLD_MS) {
-            g_face.show(faces::FACE_IDLE);
+            g_face.show(idleBaseFace());
             scheduleNextBlink();
         }
         return;
@@ -169,7 +197,7 @@ static inline void updateIdleMicro() {
     const uint32_t now = millis();
     if (g_micro_started_ms != 0) {
         if (now - g_micro_started_ms >= MICRO_HOLD_MS) {
-            g_face.show(faces::FACE_IDLE);
+            g_face.show(idleBaseFace());
             scheduleNextMicro();
         }
         return;
@@ -204,6 +232,47 @@ static void clearSideStatus() {
     M5.Display.fillRect(dx + PekekoFace::kSize, 0,
                         M5.Display.width() - dx - PekekoFace::kSize,
                         M5.Display.height(), X68_BG);
+}
+
+static void removeLastUtf8Char(String& s) {
+    int i = s.length() - 1;
+    while (i > 0 && ((uint8_t)s[i] & 0xC0) == 0x80) --i;
+    s.remove(i);
+}
+
+static String fitCaptionText(const String& text, int max_width) {
+    String out = text;
+    out.replace("\r", " ");
+    out.replace("\n", " ");
+    M5.Display.setFont(&fonts::lgfxJapanGothic_12);
+    if (M5.Display.textWidth(out) <= max_width) return out;
+
+    const String suffix = "...";
+    while (out.length() > 0 && M5.Display.textWidth(out + suffix) > max_width) {
+        removeLastUtf8Char(out);
+    }
+    return out + suffix;
+}
+
+static void drawCaptionOverlay() {
+    if (g_caption_text.length() == 0) return;
+    constexpr int margin = 6;
+    constexpr int h = 24;
+    const int y = M5.Display.height() - h;
+    M5.Display.fillRect(0, y, M5.Display.width(), h, X68_BG);
+    M5.Display.setFont(&fonts::lgfxJapanGothic_12);
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(0xFFFF, X68_BG);
+    M5.Display.setTextDatum(textdatum_t::top_left);
+    M5.Display.drawString(fitCaptionText(g_caption_text, M5.Display.width() - margin * 2),
+                          margin, y + 5);
+    M5.Display.setFont(&fonts::Font0);
+}
+
+static void clearCaptionOverlay() {
+    g_caption_text = "";
+    constexpr int h = 24;
+    M5.Display.fillRect(0, M5.Display.height() - h, M5.Display.width(), h, X68_BG);
 }
 
 static void showStatusOverlay() {
@@ -254,7 +323,7 @@ static bool updateStatusOverlay() {
     if ((int32_t)(millis() - g_status_overlay_until_ms) < 0) return true;
     g_status_overlay_visible = false;
     g_face.invalidate();
-    g_face.show(faces::FACE_IDLE);
+    g_face.show(idleBaseFace());
     clearSideStatus();
     scheduleNextBlink();
     scheduleNextMicro();
@@ -267,7 +336,9 @@ static void setState(State s, int face_id = -1) {
         g_status_overlay_until_ms = 0;
         g_status_overlay_visible = false;
     }
-    if (face_id > 0) g_face.show(face_id);
+    if (face_id > 0) {
+        g_face.show((s == State::Idle && face_id == faces::FACE_IDLE) ? idleBaseFace() : face_id);
+    }
     clearSideStatus();
     // Idle に入る時にまばたき/マイクロ表情タイマを初期化、Idle 以外に出る時は停止。
     if (s == State::Idle) {
@@ -339,6 +410,49 @@ static void showReadyError(const ReadyResponse& ready) {
     playServerErrorBeep();
 }
 
+static void showPttNotReady(const ReadyResponse& ready) {
+    setState(State::Error, ready.http_status == 0 ? faces::FACE_ERR_TIMEOUT : faces::FACE_ERR_SERVER);
+    M5.Display.fillScreen(X68_BG);
+    M5.Display.setFont(&fonts::Font0);
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(0xF800, X68_BG);
+    M5.Display.setCursor(12, 80);
+    M5.Display.println("SERVER NOT READY");
+    M5.Display.setTextColor(0xFFFF, X68_BG);
+    M5.Display.setCursor(12, 106);
+    M5.Display.printf("HTTP: %d\n", ready.http_status);
+    M5.Display.setCursor(12, 126);
+    M5.Display.println("PTT canceled");
+    Serial.printf("[PTT ] canceled: /ready HTTP %d\n", ready.http_status);
+    playServerErrorBeep();
+    delay(1200);
+    setState(State::Idle, faces::FACE_IDLE);
+}
+
+static bool ensureReadyForPtt() {
+#if defined(OFFLINE_MODE) && OFFLINE_MODE
+    return true;
+#else
+    if (WiFi.status() != WL_CONNECTED) {
+        ReadyResponse r;
+        r.http_status = 0;
+        showPttNotReady(r);
+        return false;
+    }
+    constexpr uint32_t READY_CACHE_MS = 15000;
+    if (g_last_ready_ok_ms != 0 && millis() - g_last_ready_ok_ms < READY_CACHE_MS) {
+        return true;
+    }
+    ReadyResponse ready = ChatClient::ready();
+    if (!ready.ok) {
+        showPttNotReady(ready);
+        return false;
+    }
+    g_last_ready_ok_ms = millis();
+    return true;
+#endif
+}
+
 static bool connectWiFi() {
     WiFi.mode(WIFI_STA);
     WiFi.setSleep(false);
@@ -349,6 +463,7 @@ static bool connectWiFi() {
         if (millis() - t0 > 15000) return false;
     }
     esp_wifi_set_ps(WIFI_PS_NONE);
+    configTime(9 * 3600, 0, "ntp.nict.jp", "pool.ntp.org", "time.google.com");
     Serial.printf("WiFi connected: ip=%s ch=%d mac=%s\n",
                   WiFi.localIP().toString().c_str(),
                   WiFi.channel(),
@@ -416,6 +531,7 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size,
                           wav_bits, wav_channels, wav_block, (unsigned)size);
             return;
         }
+        drawCaptionOverlay();
         while (M5.Speaker.isPlaying()) delay(4);
         return;
     }
@@ -471,6 +587,7 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size,
                                                 : face_close;
             if (next != last_face) {
                 g_face.show(next);
+                drawCaptionOverlay();
                 last_face = next;
             }
 #if SERVO_ENABLED
@@ -493,6 +610,7 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size,
     }
     // 締めは口閉じ (emote ペアに合わせる)
     g_face.show(face_close);
+    drawCaptionOverlay();
 }
 
 static void handleHttpError(int status) {
@@ -578,6 +696,7 @@ void setup() {
         showReadyError(ready);
         return;
     }
+    g_last_ready_ok_ms = millis();
     Serial.printf("[READY] server ok: %s\n", ready.body.c_str());
 #endif
 
@@ -681,6 +800,9 @@ void loop() {
 #endif
             // LCD タッチ または リモコン BtnA で録音開始
             if ((pressed || remote_ptt_edge) && !g_wait_release_after_auto_send) {
+                if (!ensureReadyForPtt()) {
+                    break;
+                }
                 if (pressed) {
                     g_face.show(faces::F_SURPRISED);
                     delay(150);
@@ -700,9 +822,11 @@ void loop() {
                     Serial.printf("[PUSH] %s (source=%s emote=%s)\n",
                                   pr.bot_text.c_str(), pr.source.c_str(),
                                   pr.emote.length() ? pr.emote.c_str() : "neutral");
+                    g_caption_text = pr.bot_text;
                     setState(State::Speaking);     // 顔/サーボのみ。lipsync が表情を上書き
                     playAckBeep();
                     playWavWithLipsync(pr.body, pr.body_size, pr.emote.c_str());
+                    g_caption_text = "";
                     free(pr.body);
                     setState(State::Idle, faces::FACE_IDLE);
                 }
@@ -751,9 +875,11 @@ void loop() {
                     if (r.emote.length() > 0) {
                         Serial.printf("[EMO ] %s\n", r.emote.c_str());
                     }
+                    g_caption_text = r.bot_text;
                     g_state = State::Speaking;
                     playAckBeep();
                     playWavWithLipsync(r.body, r.body_size, r.emote.c_str());
+                    g_caption_text = "";
                     free(r.body);
                 } else {
                     handleHttpError(r.http_status);

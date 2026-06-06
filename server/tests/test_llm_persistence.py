@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from history_store import HistoryStore
-from llm import LLM
+from llm import LLM, _clean_bot_text
 
 
 @pytest.fixture()
@@ -42,6 +42,19 @@ def test_in_memory_mode_history_not_persistent(tmp_path: Path, fake_ollama_respo
     llm2 = _make_llm(tmp_path, persistent=False)
     assert "alice" not in llm2._history
     assert llm2.status()["persistent"] is False
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("こんにちは。もっと聞きたい", "こんにちは"),
+        ("おはよう！\"); もっと聞きたい", "おはよう"),
+        ("楽しいね!もっと聞きたい!\"); もっと聞きたい", "楽しいね"),
+        ("それは聞いてみたい話だね。", "それは聞いてみたい話だね。"),
+    ],
+)
+def test_clean_bot_text_removes_only_banned_trailing_followup(raw: str, expected: str):
+    assert _clean_bot_text(raw) == expected
 
 
 def test_persistent_mode_survives_restart(tmp_path: Path, fake_ollama_response):

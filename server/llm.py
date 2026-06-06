@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from collections import OrderedDict, deque
@@ -19,6 +20,12 @@ from history_store import HistoryStore
 from persona import SYSTEM_PROMPT
 
 _WEEKDAY_JA = ("月", "火", "水", "木", "金", "土", "日")
+
+_BANNED_TRAILING_FOLLOWUP_RE = re.compile(
+    r'(?:[!！?？。]*\s*(?:["”』）)\]]\s*)?;?\s*)?'
+    r'(?:もっと聞きたい|もっとききたい|もっと聞かせて)'
+    r'[!！?？。、\s]*$'
+)
 
 
 def _format_jp_duration(seconds: float) -> str:
@@ -54,6 +61,16 @@ def _build_time_context(last_ts: float | None) -> str:
         elapsed = max(0.0, time.time() - last_ts)
         parts.append(f"前回の会話: {_format_jp_duration(elapsed)}")
     return "[" + "  ".join(parts) + "]"
+
+
+def _clean_bot_text(text: str) -> str:
+    """音声向けに、禁止した定型の末尾誘導だけを落とす。"""
+    cleaned = text.strip()
+    while True:
+        next_text = _BANNED_TRAILING_FOLLOWUP_RE.sub("", cleaned).rstrip()
+        if next_text == cleaned:
+            return cleaned
+        cleaned = next_text.rstrip('!！?？。;；"”』）)] ')
 
 
 # 時間帯ごとの「気分のフレーバ」。空文字なら系列を省略する。
@@ -164,7 +181,7 @@ class LLM:
         r = self._client.post("/api/chat", json=payload)
         r.raise_for_status()
         data = r.json()
-        bot_text = data["message"]["content"].strip()
+        bot_text = _clean_bot_text(data["message"]["content"])
         log.info("LLM ◀ %r", bot_text)
 
         dropped_sids: list[str] = []
