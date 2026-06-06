@@ -195,6 +195,7 @@ static bool updateStatusOverlay() {
     if (!g_status_overlay_visible) return false;
     if ((int32_t)(millis() - g_status_overlay_until_ms) < 0) return true;
     g_status_overlay_visible = false;
+    g_face.invalidate();
     g_face.show(faces::FACE_IDLE);
     clearSideStatus();
     scheduleNextBlink();
