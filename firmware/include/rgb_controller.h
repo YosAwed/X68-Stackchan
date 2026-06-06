@@ -1,6 +1,6 @@
 // ========================================================
 //  WS2812C x12 RGB LED 感情演出
-//  データピンは config.h の RGB_DATA_PIN で指定 (要 #define)
+//  StackChan基板のRGBはPY32 IO Expander (I2C 0x6F) 経由で制御する。
 //
 //  Idle     : 青紫のブリージング (4秒周期)
 //  Listening: 緑のパルス (1秒周期)
@@ -13,6 +13,7 @@
 #pragma once
 #include <Arduino.h>
 #include <FastLED.h>
+#include <M5Unified.h>
 #include <cmath>
 #include "avatar_state.h"
 #include "config.h"
@@ -30,18 +31,21 @@ public:
     static constexpr uint8_t MAX_BRIGHT = 80;  // 0-255 (熱・消費電力を抑制)
 
     bool begin() {
-        FastLED.addLeds<WS2812, RGB_DATA_PIN, GRB>(leds_, RGB_NUM_LEDS);
-        FastLED.setBrightness(MAX_BRIGHT);
+        if (!beginPy32()) {
+            Serial.println("[RGB ] PY32 IO expander not found");
+            return false;
+        }
+        Serial.println("[RGB ] PY32 IO expander ready");
         // 起動時レインボースイープ
         for (int i = 0; i < RGB_NUM_LEDS * 3; i++) {
             for (int j = 0; j < RGB_NUM_LEDS; j++) {
                 leds_[j] = CHSV(((i + j) * 21) & 0xFF, 240, 180);
             }
-            FastLED.show();
+            show();
             delay(20);
         }
         fill_solid(leds_, RGB_NUM_LEDS, CRGB::Black);
-        FastLED.show();
+        show();
         scene_ms_ = millis();
         return true;
     }
@@ -83,20 +87,80 @@ public:
                 fill_solid(leds_, RGB_NUM_LEDS, CRGB::Black);
                 break;
         }
-        FastLED.show();
+        show();
     }
 
 private:
+    static constexpr uint8_t PY32_ADDR = 0x6F;
+    static constexpr uint32_t PY32_I2C_FREQ = 100000;
+    static constexpr uint8_t REG_GPIO_M_L = 0x03;
+    static constexpr uint8_t REG_GPIO_M_H = 0x04;
+    static constexpr uint8_t REG_GPIO_PU_L = 0x09;
+    static constexpr uint8_t REG_GPIO_PU_H = 0x0A;
+    static constexpr uint8_t REG_GPIO_PD_L = 0x0B;
+    static constexpr uint8_t REG_GPIO_PD_H = 0x0C;
+    static constexpr uint8_t REG_GPIO_DRV_L = 0x13;
+    static constexpr uint8_t REG_GPIO_DRV_H = 0x14;
+    static constexpr uint8_t REG_LED_CFG = 0x24;
+    static constexpr uint8_t REG_LED_RAM_START = 0x30;
+
     CRGB     leds_[RGB_NUM_LEDS];
     RgbScene scene_      = RgbScene::Off;
     uint32_t scene_ms_   = 0;
     float    speak_rms_  = 0.0f;
     uint8_t  ambient_hue_ = 80;  // 現在のアンビエント色相 (非赤系, 30-199)
+    bool     py32_ready_  = false;
 
     static constexpr uint32_t AMBIENT_INTERVAL_MS = 180000; // 3 分放置でアンビエント開始
     static constexpr uint32_t AMBIENT_DURATION_MS  = 20000; // アンビエント継続時間 20 秒
 
     // ---- アニメーション ----------------------------------------
+
+    bool beginPy32() {
+        const uint32_t start = millis();
+        while (millis() - start < 1200) {
+            if (M5.In_I2C.scanID(PY32_ADDR, PY32_I2C_FREQ)) {
+                py32_ready_ = true;
+                break;
+            }
+            delay(100);
+        }
+        if (!py32_ready_) return false;
+
+        // 公式StackChanと同じく、PY32 pin 13をRGB出力用に設定する。
+        writeBit(REG_GPIO_M_L, REG_GPIO_M_H, 13, true);
+        writeBit(REG_GPIO_PU_L, REG_GPIO_PU_H, 13, true);
+        writeBit(REG_GPIO_PD_L, REG_GPIO_PD_H, 13, false);
+        writeBit(REG_GPIO_DRV_L, REG_GPIO_DRV_H, 13, false);
+        M5.In_I2C.writeRegister8(PY32_ADDR, REG_LED_CFG, RGB_NUM_LEDS & 0x3F, PY32_I2C_FREQ);
+        delay(50);
+        return true;
+    }
+
+    void writeBit(uint8_t reg_l, uint8_t reg_h, uint8_t pin, bool value) {
+        const uint8_t reg = pin < 8 ? reg_l : reg_h;
+        const uint8_t bit = pin < 8 ? pin : pin - 8;
+        uint8_t current = M5.In_I2C.readRegister8(PY32_ADDR, reg, PY32_I2C_FREQ);
+        if (value) current |= (1 << bit);
+        else current &= ~(1 << bit);
+        M5.In_I2C.writeRegister8(PY32_ADDR, reg, current, PY32_I2C_FREQ);
+    }
+
+    void show() {
+        if (!py32_ready_) return;
+        uint8_t data[RGB_NUM_LEDS * 2];
+        for (int i = 0; i < RGB_NUM_LEDS; i++) {
+            const uint8_t r = (uint16_t)leds_[i].r * MAX_BRIGHT / 255;
+            const uint8_t g = (uint16_t)leds_[i].g * MAX_BRIGHT / 255;
+            const uint8_t b = (uint16_t)leds_[i].b * MAX_BRIGHT / 255;
+            const uint16_t rgb565 = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+            data[i * 2] = rgb565 & 0xFF;
+            data[i * 2 + 1] = (rgb565 >> 8) & 0xFF;
+        }
+        M5.In_I2C.writeRegister(PY32_ADDR, REG_LED_RAM_START, data, sizeof(data), PY32_I2C_FREQ);
+        const uint8_t cfg = M5.In_I2C.readRegister8(PY32_ADDR, REG_LED_CFG, PY32_I2C_FREQ);
+        M5.In_I2C.writeRegister8(PY32_ADDR, REG_LED_CFG, cfg | (1 << 6), PY32_I2C_FREQ);
+    }
 
     void animIdle(uint32_t dt) {
         // 3 分放置でランダム非赤色アンビエントへ遷移
@@ -106,10 +170,18 @@ private:
             scene_ms_ = millis();
             return;
         }
-        // 青紫ブリージング: 4秒周期
-        float t   = (float)(dt % 4000) / 4000.0f;
-        uint8_t v = (uint8_t)(sinf(t * 2.0f * M_PI) * 50.0f + 70.0f);
-        uint8_t h = (uint8_t)(170 + (int)(sinf(t * M_PI) * 15));
+        // 青紫ブリージング: 6秒周期。暗くなる側を長めにして、ぱさっと消えないようにする。
+        float t = (float)(dt % 6000) / 6000.0f;
+        float wave;
+        if (t < 0.35f) {
+            wave = t / 0.35f;                    // 2.1秒でふわっと明るく
+        } else {
+            wave = 1.0f - (t - 0.35f) / 0.65f;   // 3.9秒かけてゆっくり暗く
+        }
+        wave = constrain(wave, 0.0f, 1.0f);
+        wave = wave * wave * (3.0f - 2.0f * wave);  // smoothstep
+        uint8_t v = (uint8_t)(6.0f + wave * 112.0f);
+        uint8_t h = (uint8_t)(170 + (int)(sinf(t * M_PI) * 8));
         fill_solid(leds_, RGB_NUM_LEDS, CHSV(h, 210, v));
     }
 

@@ -397,6 +397,7 @@ void setup() {
     cfg.internal_mic = true;
     cfg.output_power = true;
     M5.begin(cfg);
+    M5.Display.setBrightness(85);
     // 公式 StackChan キット拡張 (I/O expander, RGB, 頭頂 Si12T タッチ) を初期化。
     // M5Unified 配下の I2C バスをそのまま借りるので順序的に M5.begin() の後で。
 #if STACKCHAN_BSP_ENABLED
