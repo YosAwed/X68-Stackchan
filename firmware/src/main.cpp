@@ -69,18 +69,84 @@ static inline void scheduleNextBlink() {
 }
 
 // ---- Idle 中のマイクロ表情 (気分のゆらぎ) ----
-// 8〜15 秒のランダム間隔で 5 種の表情を 800 ms 表示する。
+// 8〜15 秒のランダム間隔で全 36 表情を順に使い切る。
 // blink と排他: 片方が動いている間は他方をトリガしない。
 static constexpr uint32_t MICRO_HOLD_MS = 800;
 static constexpr uint32_t MICRO_MIN_MS  = 8000;
 static constexpr uint32_t MICRO_MAX_MS  = 15000;
 static uint32_t g_next_micro_ms    = 0;
 static uint32_t g_micro_started_ms = 0;
+static uint64_t g_idle_micro_seen_mask = 0;
+static int      g_last_micro_face = 0;
 
 static inline void scheduleNextMicro() {
     const uint32_t span = MICRO_MAX_MS - MICRO_MIN_MS;
     g_next_micro_ms    = millis() + MICRO_MIN_MS + (uint32_t)(rand() % span);
     g_micro_started_ms = 0;
+}
+
+static int pickIdleMicroFace() {
+    static const int kMicroFaces[] = {
+        faces::F_NEUTRAL,
+        faces::F_SMILE,
+        faces::F_LAUGH_EYES_CLOSED,
+        faces::F_WINK,
+        faces::F_SURPRISED,
+        faces::F_EMBARRASSED,
+        faces::F_ANGRY,
+        faces::F_SAD,
+        faces::F_SLEEPING,
+        faces::F_MISCHIEF,
+        faces::F_SOFT_SMILE,
+        faces::F_STERN,
+        faces::F_SHOUTING,
+        faces::F_LAUGH_OPEN,
+        faces::F_QUESTION,
+        faces::F_PANIC,
+        faces::F_POUT,
+        faces::F_YAWN_SMALL,
+        faces::F_CONFIDENT,
+        faces::F_CONCERNED,
+        faces::F_THINKING_POSE,
+        faces::F_BORED,
+        faces::F_COLD,
+        faces::F_CRYING,
+        faces::F_SHY,
+        faces::F_SHOCKED,
+        faces::F_SPARKLE_EYES,
+        faces::F_RELIEVED,
+        faces::F_DETERMINED,
+        faces::F_JOY,
+        faces::F_BASHFUL,
+        faces::F_FLUSTERED,
+        faces::F_INDIFFERENT,
+        faces::F_DIZZY,
+        faces::F_YAWN_HAND,
+        faces::F_WAVE,
+    };
+    constexpr int kN = sizeof(kMicroFaces) / sizeof(kMicroFaces[0]);
+    static_assert(kN == 36, "idle micro face table must cover all faces");
+
+    int candidates[36];
+    int candidate_count = 0;
+    for (int i = 0; i < kN; ++i) {
+        const uint64_t bit = 1ULL << i;
+        if ((g_idle_micro_seen_mask & bit) == 0 && kMicroFaces[i] != g_last_micro_face) {
+            candidates[candidate_count++] = i;
+        }
+    }
+    if (candidate_count == 0) {
+        g_idle_micro_seen_mask = 0;
+        for (int i = 0; i < kN; ++i) {
+            if (kMicroFaces[i] != g_last_micro_face) {
+                candidates[candidate_count++] = i;
+            }
+        }
+    }
+    const int idx = candidates[rand() % candidate_count];
+    g_idle_micro_seen_mask |= 1ULL << idx;
+    g_last_micro_face = kMicroFaces[idx];
+    return g_last_micro_face;
 }
 
 static inline void updateIdleBlink() {
@@ -110,15 +176,7 @@ static inline void updateIdleMicro() {
     }
     if (g_blink_started_ms != 0) return;   // まばたき中はトリガしない
     if (now >= g_next_micro_ms) {
-        static const int kMicroFaces[] = {
-            faces::F_SOFT_SMILE,
-            faces::F_SPARKLE_EYES,
-            faces::F_BASHFUL,
-            faces::F_BORED,
-            faces::F_YAWN_SMALL,
-        };
-        constexpr int kN = sizeof(kMicroFaces) / sizeof(kMicroFaces[0]);
-        g_face.show(kMicroFaces[rand() % kN]);
+        g_face.show(pickIdleMicroFace());
         g_micro_started_ms = now;
     }
 }

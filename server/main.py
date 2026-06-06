@@ -169,7 +169,7 @@ def _wav_response(
         "X-Stackchan-Timing": _timing_header(timings),
         "X-Stackchan-TTS-Backend": os.getenv("TTS_BACKEND", "irodori"),
         # CoreS3 側で口パク用の表情ペアを切り替えるためのヒント。
-        # neutral/joy/sad/embarrassed/confused/surprised/sleepy/confident の英小文字。
+        # emote.VALID_CATEGORIES の英小文字。
         "X-Stackchan-Emote": emote,
     }
     if user_text is not None:

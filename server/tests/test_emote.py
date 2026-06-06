@@ -33,6 +33,24 @@ from emote import VALID_CATEGORIES, classify
     # confident
     ("まかせて、ばっちり", "confident"),  # まかせて を先勝ち
     ("大丈夫、なんとかなる", "confident"),
+    # angry
+    ("それはダメ、やめて", "angry"),
+    ("ぷんぷん怒ってる", "angry"),
+    # panic
+    ("あわわ、どうしよう", "panic"),
+    ("しまった、まずい", "panic"),
+    # shy
+    ("ちょっと照れちゃう", "shy"),
+    ("恥ずかしいから内緒", "shy"),
+    # mischief
+    ("ふふん、いたずら成功", "mischief"),
+    ("これは冗談だよ", "mischief"),
+    # relieved
+    ("よかった、解決した", "relieved"),
+    ("ほっと安心した", "relieved"),
+    # cold
+    ("ふーん、別に", "cold"),
+    ("それだけ、淡々といこう", "cold"),
 ])
 def test_classify_keyword_mapping(text: str, expected: str):
     assert classify(text) == expected
