@@ -14,6 +14,8 @@ TARGET_CONTENT_BOTTOM = 239
 CONTENT_THRESHOLD = 180
 MIN_DARK_PIXELS_PER_ROW = 20
 WHITE = (255, 255, 255)
+DISPLAY_BG = (33, 32, 33)  # firmware/include/pekeko_theme.h X68_BG (RGB565 0x2104)
+EDGE_FADE_WIDTH = 18
 
 
 def background_color(im: Image.Image) -> tuple[int, int, int]:
@@ -62,5 +64,26 @@ def align_bottom(im: Image.Image, target: int = TARGET_CONTENT_BOTTOM) -> Image.
     return out
 
 
+def fade_side_edges(im: Image.Image, width: int = EDGE_FADE_WIDTH) -> Image.Image:
+    """Blend the left/right edges into the display background color."""
+    out = im.convert("RGB").copy()
+    px = out.load()
+    w, h = out.size
+    fade = max(1, min(width, w // 2))
+
+    for x in range(fade):
+        t = x / fade
+        bg_weight = (1.0 - t) ** 2
+        for y in range(h):
+            for xx in (x, w - 1 - x):
+                r, g, b = px[xx, y]
+                px[xx, y] = (
+                    int(r * (1.0 - bg_weight) + DISPLAY_BG[0] * bg_weight),
+                    int(g * (1.0 - bg_weight) + DISPLAY_BG[1] * bg_weight),
+                    int(b * (1.0 - bg_weight) + DISPLAY_BG[2] * bg_weight),
+                )
+    return out
+
+
 def postprocess_image(im: Image.Image) -> Image.Image:
-    return align_bottom(remove_index_label(im))
+    return fade_side_edges(align_bottom(remove_index_label(im)))

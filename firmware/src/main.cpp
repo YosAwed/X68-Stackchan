@@ -14,10 +14,9 @@
 #include <LittleFS.h>
 #include <M5Unified.h>
 #include "config.h"
-// 頭頂タッチセンサー (Si12T, I2C) を扱う公式 BSP。M5StackChan.begin() で
-// I/O expander + RGB + TouchSensor をまとめて初期化、loop で update() を
-// 呼ぶと M5StackChan.TouchSensor が Button_Class 互換で wasPressed() などを
-// 提供する。
+// 頭頂タッチセンサー (Si12T, I2C) を扱う公式 BSP。
+// サーボは本ファーム側で制御するため M5StackChan.begin() は使わず、
+// TouchSensor だけを初期化・更新する。
 #if STACKCHAN_BSP_ENABLED
 #include <M5StackChan.h>
 #endif
@@ -48,6 +47,7 @@ static State          g_state = State::Boot;
 static bool           g_wait_release_after_auto_send = false;
 static uint32_t       g_headpat_start_ms = 0;   // Headpat 状態に入った時刻
 static uint32_t       g_headpat_last_press_ms = 0;  // 直近で isPressed=true だった時刻
+static uint32_t       g_head_touch_started_ms = 0;
 static uint32_t       g_last_mic_log_ms = 0;
 static uint32_t       g_last_pull_ms    = 0;
 static uint32_t       g_status_overlay_until_ms = 0;
@@ -465,10 +465,10 @@ void setup() {
     cfg.output_power = true;
     M5.begin(cfg);
     M5.Display.setBrightness(85);
-    // 公式 StackChan キット拡張 (I/O expander, RGB, 頭頂 Si12T タッチ) を初期化。
-    // M5Unified 配下の I2C バスをそのまま借りるので順序的に M5.begin() の後で。
+    // 公式 StackChan キット拡張のうち、頭頂 Si12T タッチだけを初期化。
+    // M5StackChan.begin() はサーボも初期化するため使わない。
 #if STACKCHAN_BSP_ENABLED
-    M5StackChan.begin();
+    M5StackChan.TouchSensor.begin();
 #endif
     Serial.begin(115200);
     Serial.printf("[M5  ] board=%d speaker=%d mic=%d\n",
@@ -534,7 +534,7 @@ void setup() {
 void loop() {
     M5.update();
 #if STACKCHAN_BSP_ENABLED
-    M5StackChan.update();   // 頭頂タッチセンサー (Si12T) のポーリング
+    M5StackChan.TouchSensor.update();   // 頭頂タッチセンサー (Si12T) のポーリング
 #endif
 
     // CoreS3 SE は物理ボタンが無く、M5Unified の virtual button マッピングも
@@ -575,9 +575,16 @@ void loop() {
             // wasPressed() は即発火するためスワイプ判定と競合する。
             // g_touch.update() に一本化して Swipe/Pet を区別する。
             if (!g_wait_release_after_auto_send) {
-#if HEAD_TOUCH_ENABLED
-                const auto touch_ev = g_touch.update();
-                if (touch_ev == TouchHandler::Event::Swipe) {
+#if HEAD_TOUCH_ENABLED && STACKCHAN_BSP_ENABLED
+                const bool head_pressed = M5StackChan.TouchSensor.isPressed();
+                if (!head_pressed) {
+                    g_head_touch_started_ms = 0;
+                } else if (g_head_touch_started_ms == 0) {
+                    g_head_touch_started_ms = millis();
+                }
+
+                if (M5StackChan.TouchSensor.wasSwiped()) {
+                    g_head_touch_started_ms = 0;
                     // スワイプ: 喜び表情 + 首振り + 黄色 LED バースト
                     g_face.show(faces::FACE_SWIPE);
 #if RGB_ENABLED
@@ -588,13 +595,16 @@ void loop() {
 #endif
                     playAckBeep();
                     break;
-                } else if (touch_ev == TouchHandler::Event::Pet) {
+                } else if (head_pressed && millis() - g_head_touch_started_ms >= 800) {
                     // ホールド: headpat 開始 (はにかみ → とろけ → 眠り)
                     playHeadpatChime();
                     const uint32_t now = millis();
+                    g_head_touch_started_ms = 0;
                     g_headpat_start_ms = now;
                     g_headpat_last_press_ms = now;
-                    M5StackChan.showRgbColor(180, 60, 100);
+#if RGB_ENABLED
+                    g_rgb.setScene(RgbScene::Pet);
+#endif
                     setState(State::Headpat, faces::F_BASHFUL);
                     Serial.println("[HEADPAT] start");
                     break;
@@ -709,13 +719,12 @@ void loop() {
                 // 撫でられ終わり: LED 消灯 → やわらか笑顔 → Idle
                 const uint32_t total = now - g_headpat_start_ms;
                 Serial.printf("[HEADPAT] end (total=%ums)\n", (unsigned)total);
-                M5StackChan.showRgbColor(0, 0, 0);
                 g_face.show(faces::F_SOFT_SMILE);
                 delay(600);
                 setState(State::Idle, faces::FACE_IDLE);
                 break;
             }
-            // 撫でられ継続: 100ms 周期で表情 / RGB を更新。
+            // 撫でられ継続: 100ms 周期で表情を更新。
             static uint32_t last_update = 0;
             if (now - last_update < 100) break;
             last_update = now;
@@ -738,27 +747,6 @@ void loop() {
             }
             g_face.show(target_face);   // show() は同 ID なら redraw を省く
 
-            // RGB: 段階で色味、脈動 (sin 2.5Hz 相当) で「呼吸」感
-            const float t_sec = held_ms / 1000.0f;
-            const float pulse = 0.55f + 0.45f * sinf(t_sec * 2.5f);  // 0.10..1.00
-            uint8_t r, g, b;
-            if (held_ms < 1500) {
-                // 薄いピンク
-                r = (uint8_t)(180 * pulse);
-                g = (uint8_t)( 60 * pulse);
-                b = (uint8_t)(100 * pulse);
-            } else if (held_ms < 3000) {
-                // 暖かいオレンジ
-                r = (uint8_t)(255 * pulse);
-                g = (uint8_t)(120 * pulse);
-                b = (uint8_t)( 40 * pulse);
-            } else {
-                // 紫マゼンタ (夢見心地)
-                r = (uint8_t)(150 * pulse);
-                g = (uint8_t)( 40 * pulse);
-                b = (uint8_t)(200 * pulse);
-            }
-            M5StackChan.showRgbColor(r, g, b);
 #else
             setState(State::Idle, faces::FACE_IDLE);
 #endif
