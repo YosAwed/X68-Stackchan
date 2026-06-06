@@ -10,6 +10,9 @@ Thumbs.db
 .idea/
 *.swp
 
+# Logs
+*.log
+
 # Python
 __pycache__/
 *.pyc

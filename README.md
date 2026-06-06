@@ -55,6 +55,12 @@ LED の 12 個は全て `M5StackChan.showRgbColor()` で同色制御、撫で中
 2. **母艦サーバへの到達確認** — `OFFLINE_MODE=0` に戻して uvicorn を起こす。シリアルログに `WiFi connected` と `/pull` の応答が出ることを見る
 3. **会話 (push-to-talk)** — 画面下をタッチ長押し → 録音 → STT → LLM → TTS が往復する
 
+Windows + WSL2 で Irodori サーバを CoreS3 から使う場合は、WSL の localhost 転送を LAN に出すプロキシも必要。下のスクリプトで uvicorn と LAN プロキシをまとめて起動できる。
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-irodori-server.ps1 -ListenAddress 192.168.0.5 -StopExisting
+```
+
 ## 構成
 
 ```
