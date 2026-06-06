@@ -79,6 +79,18 @@ def app_with_fakes(monkeypatch_module):
     return main
 
 
+def test_limit_spoken_text_prefers_complete_sentence(app_with_fakes, monkeypatch):
+    monkeypatch.setenv("MAX_SPEAK_CHARS", "28")
+    text = "あたしはX68000を大好きだよ。 レトロな音と光に心を奪われるね。"
+    assert app_with_fakes._limit_spoken_text(text) == "あたしはX68000を大好きだよ。"
+
+
+def test_limit_spoken_text_avoids_comma_fragment(app_with_fakes, monkeypatch):
+    monkeypatch.setenv("MAX_SPEAK_CHARS", "18")
+    text = "今日はサーバーを見ていたよ、音声も確認したよ。"
+    assert app_with_fakes._limit_spoken_text(text) == "今日はサーバーを見ていたよ。"
+
+
 @pytest.fixture()
 def client(app_with_fakes):
     from fastapi.testclient import TestClient
@@ -175,6 +187,34 @@ def test_enqueue_uses_wav_cache_when_enabled(tmp_path, app_with_fakes):
             r2 = c.post("/enqueue", data={"text": "同じこと", "via_llm": "false"}, headers={"X-Stackchan-Token": TEST_ENQUEUE_TOKEN})
         assert r1.status_code == 200 and r2.status_code == 200
         assert counter["n"] == 1  # 2 回目はキャッシュヒットで TTS スキップ
+    finally:
+        tts.synthesize = original_synth  # type: ignore[assignment]
+        app_with_fakes.wav_cache = original_cache
+
+
+def test_chat_text_uses_wav_cache_when_enabled(tmp_path, app_with_fakes):
+    from fastapi.testclient import TestClient
+    from wav_cache import WavCache
+
+    original_cache = app_with_fakes.wav_cache
+    app_with_fakes.wav_cache = WavCache(dir=tmp_path)
+
+    tts = app_with_fakes.tts
+    original_synth = tts.synthesize
+    counter = {"n": 0}
+
+    def counting_synth(text: str) -> bytes:
+        counter["n"] += 1
+        return original_synth(text)
+
+    tts.synthesize = counting_synth  # type: ignore[assignment]
+
+    try:
+        with TestClient(app_with_fakes.app) as c:
+            r1 = c.post("/chat_text", data={"text": "同じ質問", "sid": "cache-test"})
+            r2 = c.post("/chat_text", data={"text": "同じ質問", "sid": "cache-test"})
+        assert r1.status_code == 200 and r2.status_code == 200
+        assert counter["n"] == 1
     finally:
         tts.synthesize = original_synth  # type: ignore[assignment]
         app_with_fakes.wav_cache = original_cache

@@ -26,6 +26,14 @@ _BANNED_TRAILING_FOLLOWUP_RE = re.compile(
     r'(?:もっと聞きたい|もっとききたい|もっと聞かせて)'
     r'[!！?？。、\s]*$'
 )
+_TRAILING_BROKEN_RE = re.compile(r"[、,\s]+$")
+_NATURAL_SENTENCE_END_RE = re.compile(r"(。|だよ|だね|かな|です|ます)$")
+_SPEECH_TEST_RE = re.compile(r"(しゃべ|喋|話し|声.*出|音.*出|テスト)")
+_STATUS_PROMPT_RE = re.compile(r"(調子|元気|げんき|具合)")
+_TODAY_PROMPT_RE = re.compile(r"(今日|きょう).*(何|なに).*?(した|してた|してる)")
+_X68000_TOPIC_RE = re.compile(r"(X68000|X68|エックス|レトロ\s*PC|Human68k|X-BASIC|SX-Window)", re.IGNORECASE)
+_X68000_LIKE_RE = re.compile(r"(X68000|X68|エックス).*(好き|すき)|(?:好き|すき).*(X68000|X68|エックス)", re.IGNORECASE)
+_POETIC_FRAGMENT_RE = re.compile(r"(きらきら|色鮮やか|光|音色|心を|小さな手|思い出す)")
 
 
 def _format_jp_duration(seconds: float) -> str:
@@ -63,14 +71,42 @@ def _build_time_context(last_ts: float | None) -> str:
     return "[" + "  ".join(parts) + "]"
 
 
-def _clean_bot_text(text: str) -> str:
-    """音声向けに、禁止した定型の末尾誘導だけを落とす。"""
+def _sentences(text: str) -> list[str]:
+    found = re.findall(r"[^。！？!?]+[。！？!?]?", text)
+    return [s.strip() for s in found if s.strip()]
+
+
+def _clean_bot_text(text: str, user_text: str = "") -> str:
+    """音声向けに、禁止した定型誘導と未完の末尾だけを整える。"""
     cleaned = text.strip()
     while True:
         next_text = _BANNED_TRAILING_FOLLOWUP_RE.sub("", cleaned).rstrip()
         if next_text == cleaned:
-            return cleaned
+            break
         cleaned = next_text.rstrip('!！?？。;；"”』）)] ')
+    cleaned = " ".join(cleaned.split())
+    cleaned = cleaned.replace("！", "。").replace("!", "。")
+    cleaned = cleaned.replace("？", "。").replace("?", "。")
+    cleaned = re.sub(r"X6800(?!0)", "X68000", cleaned)
+    if _SPEECH_TEST_RE.search(user_text):
+        cleaned = "うん、聞こえてるよ。あたしはぺけ子だよ。"
+    elif _STATUS_PROMPT_RE.search(user_text):
+        cleaned = "元気だよ。声をかけてくれてうれしいな。"
+    elif _TODAY_PROMPT_RE.search(user_text):
+        cleaned = "今日はサーバーのそばで待ってたよ。"
+    elif _X68000_LIKE_RE.search(user_text):
+        cleaned = "あたしはX68000が大好きだよ。"
+    elif user_text and not _X68000_TOPIC_RE.search(user_text):
+        kept = [
+            s for s in _sentences(cleaned)
+            if not _X68000_TOPIC_RE.search(s) and not _POETIC_FRAGMENT_RE.search(s)
+        ]
+        if kept:
+            cleaned = "".join(kept)
+    cleaned = _TRAILING_BROKEN_RE.sub("", cleaned)
+    if cleaned and not _NATURAL_SENTENCE_END_RE.search(cleaned):
+        cleaned += "。"
+    return cleaned
 
 
 # 時間帯ごとの「気分のフレーバ」。空文字なら系列を省略する。
@@ -181,7 +217,7 @@ class LLM:
         r = self._client.post("/api/chat", json=payload)
         r.raise_for_status()
         data = r.json()
-        bot_text = _clean_bot_text(data["message"]["content"])
+        bot_text = _clean_bot_text(data["message"]["content"], user_text)
         log.info("LLM ◀ %r", bot_text)
 
         dropped_sids: list[str] = []

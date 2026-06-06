@@ -12,6 +12,8 @@ Thumbs.db
 
 # Logs
 *.log
+tts_cache/
+server/tts_cache/
 
 # Python
 __pycache__/

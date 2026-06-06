@@ -47,14 +47,46 @@ def test_in_memory_mode_history_not_persistent(tmp_path: Path, fake_ollama_respo
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        ("こんにちは。もっと聞きたい", "こんにちは"),
-        ("おはよう！\"); もっと聞きたい", "おはよう"),
-        ("楽しいね!もっと聞きたい!\"); もっと聞きたい", "楽しいね"),
+        ("こんにちは。もっと聞きたい", "こんにちは。"),
+        ("おはよう！\"); もっと聞きたい", "おはよう。"),
+        ("楽しいね!もっと聞きたい!\"); もっと聞きたい", "楽しいね。"),
         ("それは聞いてみたい話だね。", "それは聞いてみたい話だね。"),
+        ("X68000の話が好きで、 ", "X68000の話が好きで。"),
+        ("X6800の話だよ", "X68000の話だよ"),
+        ("うん、好きだよ。 レトロPCもいいね", "うん、好きだよ。 レトロPCもいいね。"),
     ],
 )
 def test_clean_bot_text_removes_only_banned_trailing_followup(raw: str, expected: str):
     assert _clean_bot_text(raw) == expected
+
+
+def test_clean_bot_text_normalizes_marks_for_speech():
+    assert _clean_bot_text("元気だよ！ぺけ子だよ?") == "元気だよ。ぺけ子だよ。"
+
+
+def test_clean_bot_text_removes_off_topic_x68000_sentence():
+    raw = "あたし、今日はぽかぽかしてるよ！X68000の話、聞いてくれてありがとう。"
+    assert _clean_bot_text(raw, "今日なにしてた？") == "今日はサーバーのそばで待ってたよ。"
+
+
+def test_clean_bot_text_handles_speech_test_prompt():
+    raw = "X68000の音色、好きだよ！ ぺけ子ちゃんが、きらきらと語るよ。"
+    assert _clean_bot_text(raw, "しゃべってみて") == "うん、聞こえてるよ。あたしはぺけ子だよ。"
+
+
+def test_clean_bot_text_handles_status_prompt():
+    raw = "元気だよ！ぺけ子ちゃんが元気だよ。"
+    assert _clean_bot_text(raw, "こんにちは、調子はどう？") == "元気だよ。声をかけてくれてうれしいな。"
+
+
+def test_clean_bot_text_handles_today_prompt():
+    raw = "今日もレトロな音に包まれてるよ。"
+    assert _clean_bot_text(raw, "今日なにしてた？") == "今日はサーバーのそばで待ってたよ。"
+
+
+def test_clean_bot_text_handles_x68000_like_prompt():
+    raw = "はい！X68000の色鮮やかな世界が大好きだよ。"
+    assert _clean_bot_text(raw, "X68000って好き？") == "あたしはX68000が大好きだよ。"
 
 
 def test_persistent_mode_survives_restart(tmp_path: Path, fake_ollama_response):
