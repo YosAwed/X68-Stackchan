@@ -210,7 +210,9 @@ public:
             target_pitch_ = (float)(rand() % 3 - 1) * 0.070f;
             lerp_speed_   = 0.08f;
             idle_nudge_return_ms_ = now + 1600;
+#if SERVO_IDLE_MOTION_DEBUG
             Serial.printf("[SRV ] idle nudge yaw=%.3f pitch=%.3f\n", target_yaw_, target_pitch_);
+#endif
 #else
             target_yaw_   = 0.0f;
             target_pitch_ = 0.0f;
@@ -252,7 +254,6 @@ public:
             torqueOff(ID_PITCH);
             torque_enabled_ = false;
             torque_release_at_ms_ = 0;
-            Serial.println("[SRV ] auto torque off");
         }
     }
 

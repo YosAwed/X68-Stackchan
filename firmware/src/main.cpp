@@ -22,6 +22,7 @@
 #include <M5StackChan.h>
 #endif
 #include <esp_random.h>
+#include <esp_wifi.h>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -49,6 +50,8 @@ static uint32_t       g_headpat_start_ms = 0;   // Headpat 状態に入った時
 static uint32_t       g_headpat_last_press_ms = 0;  // 直近で isPressed=true だった時刻
 static uint32_t       g_last_mic_log_ms = 0;
 static uint32_t       g_last_pull_ms    = 0;
+static uint32_t       g_status_overlay_until_ms = 0;
+static bool           g_status_overlay_visible  = false;
 
 // ---- Idle 中のまばたき ----
 // 4〜8 秒のランダム間隔で目を閉じた表情 (FACE_BLINK) を 150 ms 表示する。
@@ -145,8 +148,66 @@ static void clearSideStatus() {
                         M5.Display.height(), X68_BG);
 }
 
+static void showStatusOverlay() {
+    g_status_overlay_until_ms = millis() + 2200;
+    g_status_overlay_visible = true;
+
+    M5.Display.fillScreen(X68_BG);
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(0xFFFF, X68_BG);
+    M5.Display.setCursor(14, 14);
+    M5.Display.println("STACKCHAN STATUS");
+
+    M5.Display.setTextColor(0xBDF7, X68_BG);
+    M5.Display.setCursor(14, 40);
+    if (WiFi.status() == WL_CONNECTED) {
+        M5.Display.printf("WiFi : OK  ch=%d  %ddBm\n", WiFi.channel(), WiFi.RSSI());
+        M5.Display.setCursor(14, 58);
+        M5.Display.printf("IP   : %s\n", WiFi.localIP().toString().c_str());
+    } else {
+        M5.Display.println("WiFi : disconnected");
+        M5.Display.setCursor(14, 58);
+        M5.Display.println("IP   : -");
+    }
+
+    M5.Display.setCursor(14, 82);
+    M5.Display.printf("Server: %s:%u\n", SERVER_HOST, (unsigned)SERVER_PORT);
+
+    const auto& rs = g_remote.raw();
+    M5.Display.setCursor(14, 106);
+    if (g_remote.isConnected()) {
+        const uint32_t age = millis() - rs.last_ms;
+        M5.Display.printf("Remote: OK  btn=%02X  age=%ums\n", rs.buttons, (unsigned)age);
+    } else {
+        M5.Display.println("Remote: disconnected");
+    }
+
+    const uint32_t uptime = millis() / 1000;
+    M5.Display.setCursor(14, 130);
+    M5.Display.printf("Uptime: %02u:%02u:%02u\n",
+                      (unsigned)(uptime / 3600),
+                      (unsigned)((uptime / 60) % 60),
+                      (unsigned)(uptime % 60));
+    Serial.println("[UI  ] status overlay");
+}
+
+static bool updateStatusOverlay() {
+    if (!g_status_overlay_visible) return false;
+    if ((int32_t)(millis() - g_status_overlay_until_ms) < 0) return true;
+    g_status_overlay_visible = false;
+    g_face.show(faces::FACE_IDLE);
+    clearSideStatus();
+    scheduleNextBlink();
+    scheduleNextMicro();
+    return false;
+}
+
 static void setState(State s, int face_id = -1) {
     g_state = s;
+    if (s != State::Idle) {
+        g_status_overlay_until_ms = 0;
+        g_status_overlay_visible = false;
+    }
     if (face_id > 0) g_face.show(face_id);
     clearSideStatus();
     // Idle に入る時にまばたき/マイクロ表情タイマを初期化、Idle 以外に出る時は停止。
@@ -221,13 +282,18 @@ static void showReadyError(const ReadyResponse& ready) {
 
 static bool connectWiFi() {
     WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
     const uint32_t t0 = millis();
     while (WiFi.status() != WL_CONNECTED) {
         delay(200);
         if (millis() - t0 > 15000) return false;
     }
-    Serial.printf("WiFi connected: %s\n", WiFi.localIP().toString().c_str());
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    Serial.printf("WiFi connected: ip=%s ch=%d mac=%s\n",
+                  WiFi.localIP().toString().c_str(),
+                  WiFi.channel(),
+                  WiFi.macAddress().c_str());
     return true;
 }
 
@@ -478,7 +544,9 @@ void loop() {
         const auto t = M5.Touch.getDetail(0);
         pressed = t.isPressed();
     }
+    g_remote.update();
     const bool remote_ptt_edge = g_remote.btnAEdge();  // 毎フレーム呼ぶ (エッジ追跡)
+    const bool remote_status_edge = g_remote.btnBEdge();
 
 #if defined(OFFLINE_MODE) && OFFLINE_MODE
     {
@@ -494,6 +562,13 @@ void loop() {
         case State::Idle: {
             if (!pressed && !g_remote.btnA()) {
                 g_wait_release_after_auto_send = false;
+            }
+            if (remote_status_edge) {
+                showStatusOverlay();
+                break;
+            }
+            if (updateStatusOverlay()) {
+                break;
             }
             // 頭頂タッチ: スワイプ優先、ホールドでなでなで (headpat)
             // wasPressed() は即発火するためスワイプ判定と競合する。
