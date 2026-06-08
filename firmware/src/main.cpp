@@ -43,6 +43,7 @@ static PekekoFace     g_face;
 static AudioRecorder  g_rec;
 static State          g_state = State::Boot;
 static bool           g_wait_release_after_auto_send = false;
+static uint32_t       g_listening_start_ms = 0;
 static uint32_t       g_headpat_start_ms = 0;   // Headpat 状態に入った時刻
 static uint32_t       g_headpat_last_press_ms = 0;  // 直近で isPressed=true だった時刻
 static uint32_t       g_headpat_idle_press_ms = 0;  // Idle 中の頭頂タッチ開始時刻
@@ -237,6 +238,53 @@ static void drawMicLevel(uint16_t peak, uint16_t rms) {
     }
 }
 
+static size_t nextUtf8Index(const String& s, size_t i) {
+    if (i >= s.length()) return i;
+    const uint8_t c = (uint8_t)s[i];
+    if ((c & 0x80) == 0) return i + 1;
+    if ((c & 0xE0) == 0xC0) return min(i + 2, (size_t)s.length());
+    if ((c & 0xF0) == 0xE0) return min(i + 3, (size_t)s.length());
+    if ((c & 0xF8) == 0xF0) return min(i + 4, (size_t)s.length());
+    return i + 1;
+}
+
+static void drawCaption(const String& text) {
+    if (text.length() == 0) return;
+
+    constexpr int margin = 8;
+    constexpr int pad = 5;
+    constexpr int box_h = 42;
+    const int w = M5.Display.width();
+    const int h = M5.Display.height();
+    const int y = h - box_h - 4;
+    const int max_w = w - margin * 2 - pad * 2;
+
+    M5.Display.fillRoundRect(margin, y, w - margin * 2, box_h, 4, 0x0000);
+    M5.Display.drawRoundRect(margin, y, w - margin * 2, box_h, 4, 0x8410);
+    M5.Display.setFont(&fonts::efontJA_12);
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(0xFFFF, 0x0000);
+
+    int line_no = 0;
+    size_t pos = 0;
+    while (pos < text.length() && line_no < 2) {
+        String line;
+        size_t next = pos;
+        while (next < text.length()) {
+            const size_t char_end = nextUtf8Index(text, next);
+            String candidate = line + text.substring(next, char_end);
+            if (line.length() > 0 && M5.Display.textWidth(candidate) > max_w) break;
+            line = candidate;
+            next = char_end;
+        }
+        M5.Display.setCursor(margin + pad, y + pad + line_no * 16);
+        M5.Display.print(line);
+        pos = next;
+        line_no++;
+    }
+    M5.Display.setFont(&fonts::Font0);
+}
+
 static void showReadyError(const ReadyResponse& ready) {
     setState(State::Error, faces::FACE_ERR_SERVER);
     M5.Display.fillScreen(X68_BG);
@@ -296,8 +344,19 @@ static bool ensureWiFiConnected() {
 
 // 応答 WAV を再生しながら、PCM の RMS で口パク (口閉/口開/大開 3 段階)
 static void playWavWithLipsync(const uint8_t* wav, size_t size,
-                               const char* emote = nullptr) {
+                               const char* emote = nullptr,
+                               const String& caption = String()) {
     if (!wav || size < 44) return;
+
+    M5.Speaker.end();
+    delay(20);
+    const bool speaker_ready = M5.Speaker.begin();
+    M5.Speaker.setVolume(SPK_VOLUME);
+    M5.Speaker.setAllChannelVolume(255);
+    Serial.printf("[AUDIO] speaker begin=%d volume=%u\n",
+                  speaker_ready ? 1 : 0,
+                  (unsigned)SPK_VOLUME);
+    delay(20);
 
     // WAV ヘッダから data チャンクを探す (簡易: 標準的な配置を仮定)
     const uint8_t* pcm = wav + 44;
@@ -331,17 +390,39 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size,
         }
     }
     if (wav_bits != 16 || wav_channels == 0 || wav_block < 2) {
-        M5.Speaker.setVolume(SPK_VOLUME);
-        M5.Speaker.playWav(wav, size);
+        const bool wav_started = M5.Speaker.playWav(
+            wav, size, /*repeat=*/1, /*channel=*/0,
+            /*stop_current_sound=*/true);
+        Serial.printf("[AUDIO] playWav fallback bytes=%u ok=%d\n",
+                      (unsigned)size,
+                      wav_started ? 1 : 0);
+        drawCaption(caption);
         while (M5.Speaker.isPlaying()) delay(4);
         return;
     }
     pcm_bytes -= pcm_bytes % wav_block;
     const size_t frames = pcm_bytes / wav_block;
 
-    M5.Speaker.setVolume(SPK_VOLUME);
     const uint32_t t0 = millis();
-    M5.Speaker.playWav(wav, size);
+    const bool playback_started = M5.Speaker.playRaw(
+        reinterpret_cast<const int16_t*>(pcm),
+        frames * wav_channels,
+        wav_sr,
+        wav_channels == 2,
+        /*repeat=*/1,
+        /*channel=*/0,
+        /*stop_current_sound=*/true);
+    Serial.printf("[AUDIO] playRaw sr=%u ch=%u bits=%u bytes=%u ok=%d\n",
+                  (unsigned)wav_sr,
+                  (unsigned)wav_channels,
+                  (unsigned)wav_bits,
+                  (unsigned)pcm_bytes,
+                  playback_started ? 1 : 0);
+    if (!playback_started) {
+        M5.Speaker.playWav(wav, size, /*repeat=*/1, /*channel=*/0,
+                           /*stop_current_sound=*/true);
+    }
+    drawCaption(caption);
 
     // 3 段階閾値: <LOW=口閉じ、<HIGH=口開け、>=HIGH=大開け (climax 音節)
     // RMS_THRESH=2200 の旧運用と同等の頻度で open が出る帯域に挟む。
@@ -377,6 +458,7 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size,
                                                 : face_close;
             if (next != last_face) {
                 g_face.show(next);
+                drawCaption(caption);
                 last_face = next;
             }
 #if SERVO_ENABLED
@@ -395,6 +477,7 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size,
     }
     // 締めは口閉じ (emote ペアに合わせる)
     g_face.show(face_close);
+    drawCaption(caption);
 }
 
 static void handleHttpError(int status) {
@@ -616,6 +699,7 @@ void loop() {
                     delay(150);
                 }
                 g_rec.start();
+                g_listening_start_ms = millis();
                 setState(State::Listening, faces::FACE_LISTENING);
                 break;
             }
@@ -635,7 +719,7 @@ void loop() {
                                   pr.emote.length() ? pr.emote.c_str() : "neutral");
                     setState(State::Speaking);     // 顔/サーボのみ。lipsync が表情を上書き
                     playAckBeep();
-                    playWavWithLipsync(pr.body, pr.body_size, pr.emote.c_str());
+                    playWavWithLipsync(pr.body, pr.body_size, pr.emote.c_str(), pr.bot_text);
                     free(pr.body);
                     setState(State::Idle, faces::FACE_IDLE);
                 }
@@ -653,16 +737,21 @@ void loop() {
             g_rec.poll();
             drawMicLevel(g_rec.lastPeak(), g_rec.lastRms());
             const bool rec_overflow = g_rec.isFull();
+            const bool rec_timeout =
+                g_listening_start_ms != 0 &&
+                millis() - g_listening_start_ms >= ((uint32_t)MAX_REC_SECONDS * 1000u + 500u);
             // ローカルボタンもリモコンボタンも離されたら送信
-            if ((!pressed && !g_remote.btnA()) || rec_overflow) {
-                if (rec_overflow) {
-                    Serial.printf("[REC ] Buffer full (%us): auto-sending\n",
+            if ((!pressed && !g_remote.btnA()) || rec_overflow || rec_timeout) {
+                if (rec_overflow || rec_timeout) {
+                    Serial.printf("[REC ] %s (%us): auto-sending\n",
+                                  rec_overflow ? "Buffer full" : "Timeout",
                                   (unsigned)MAX_REC_SECONDS);
                     g_wait_release_after_auto_send = true;
                     g_face.show(faces::FACE_REC_OVERFLOW);
                     playOverflowBeep();
                 }
                 const size_t n = g_rec.stop();
+                g_listening_start_ms = 0;
                 setState(State::Thinking, faces::FACE_THINKING);
 #if defined(OFFLINE_MODE) && OFFLINE_MODE
                 // OFFLINE: HTTP 呼び出しせず、考えてるフリ → ack → 笑顔 → Idle
@@ -689,7 +778,7 @@ void loop() {
                     }
                     g_state = State::Speaking;
                     playAckBeep();
-                    playWavWithLipsync(r.body, r.body_size, r.emote.c_str());
+                    playWavWithLipsync(r.body, r.body_size, r.emote.c_str(), r.bot_text);
                     free(r.body);
                 } else {
                     handleHttpError(r.http_status);
