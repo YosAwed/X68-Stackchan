@@ -76,6 +76,22 @@ def app_with_fakes(monkeypatch_module):
     if "main" in sys.modules:
         del sys.modules["main"]
     main = importlib.import_module("main")
+
+    # The settings singleton is constructed at import time of settings.py.
+    # After monkeypatching env (TTS_CACHE_DIR, ENQUEUE_TOKEN, etc.) we re-instantiate
+    # so that Settings() sees the test values. Then push the values that main.py
+    # captured at its own import time.
+    import settings as _settings_mod
+    _settings_mod.settings = _settings_mod.Settings()
+
+    main.ENQUEUE_TOKEN = _settings_mod.settings.ENQUEUE_TOKEN
+    # If the test set up a cache dir, make sure the wav_cache in main reflects it.
+    if _settings_mod.settings.TTS_CACHE_DIR:
+        from wav_cache import WavCache
+        main.wav_cache = WavCache(
+            dir=_settings_mod.settings.TTS_CACHE_DIR,
+            version=_settings_mod.settings.TTS_CACHE_VERSION,
+        )
     return main
 
 

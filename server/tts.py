@@ -13,13 +13,14 @@ main.py からは `from tts import TTS; tts = TTS()` で透過的に切替わる
 from __future__ import annotations
 
 import logging
-import os
+
+from settings import settings
 
 log = logging.getLogger(__name__)
 
 
 def TTS(*args, **kwargs):
-    backend = os.getenv("TTS_BACKEND", "irodori").lower()
+    backend = settings.TTS_BACKEND.lower()
     log.info("TTS backend = %s", backend)
     if backend == "irodori":
         from tts_irodori import TTS as _Real
