@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import logging
+import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -139,6 +140,42 @@ def _timing_header(timings: dict[str, float]) -> str:
     return ",".join(f"{k};dur={v:.1f}" for k, v in timings.items())
 
 
+def _limit_spoken_text(text: str) -> str:
+    """CoreS3 playback stays more reliable with short response WAVs.
+
+    Prefer complete sentences. A raw character cut can turn otherwise valid
+    Japanese into broken fragments such as "心を。".
+    """
+    limit = settings.get_max_speak_chars()
+    text = " ".join(text.strip().split())
+    if limit <= 0 or len(text) <= limit:
+        return text
+    sentences = re.findall(r"[^。！？!?]+[。！？!?]", text)
+    spoken = ""
+    for sentence in sentences:
+        candidate = (spoken + sentence).strip()
+        if len(candidate) > limit:
+            break
+        spoken = candidate
+    if spoken:
+        return spoken
+    cut = text[:limit].rstrip("、。,.!?！？ ")
+    cut = re.sub(r"[、,][^、,。！？!?]*$", "", cut).rstrip()
+    return (cut or text[:limit].rstrip("、。,.!?！？ ")) + "。"
+
+
+def _synthesize_speech(text: str, *, use_cache: bool = True) -> bytes:
+    if use_cache:
+        cached = wav_cache.get(text)
+        if cached is not None:
+            log.info("TTS cache hit: %r", text)
+            return cached
+    wav = tts.synthesize(text)
+    if use_cache:
+        wav_cache.put(text, wav)
+    return wav
+
+
 def _wav_response(
     wav: bytes,
     *,
@@ -222,7 +259,7 @@ async def chat(
     else:
         try:
             t0 = time.perf_counter()
-            bot_text = llm.chat(sid, user_text)
+            bot_text = _limit_spoken_text(llm.chat(sid, user_text))
             timings["llm"] = _elapsed_ms(t0)
         except Exception as e:
             log.exception("LLM failed")
@@ -230,7 +267,7 @@ async def chat(
 
     try:
         t0 = time.perf_counter()
-        wav_out = tts.synthesize(bot_text)
+        wav_out = _synthesize_speech(bot_text)
         timings["tts"] = _elapsed_ms(t0)
     except Exception as e:
         log.exception("TTS failed")
@@ -254,7 +291,7 @@ def speak(text: str = Form(...)):
         raise HTTPException(status_code=400, detail="text is empty")
     try:
         t0 = time.perf_counter()
-        wav_out = tts.synthesize(text)
+        wav_out = _synthesize_speech(text)
         timings["tts"] = _elapsed_ms(t0)
     except Exception as e:
         log.exception("TTS failed")
@@ -272,14 +309,14 @@ def chat_text(text: str = Form(...), sid: str = Form("default")):
         raise HTTPException(status_code=400, detail="text is empty")
     try:
         t0 = time.perf_counter()
-        bot_text = llm.chat(sid, text)
+        bot_text = _limit_spoken_text(llm.chat(sid, text))
         timings["llm"] = _elapsed_ms(t0)
     except Exception as e:
         log.exception("LLM failed")
         return JSONResponse(status_code=500, content={"error": f"llm: {e}"})
     try:
         t0 = time.perf_counter()
-        wav_out = tts.synthesize(bot_text)
+        wav_out = _synthesize_speech(bot_text)
         timings["tts"] = _elapsed_ms(t0)
     except Exception as e:
         log.exception("TTS failed")
@@ -345,15 +382,7 @@ async def enqueue(
             bot_text = text
         if not bot_text:
             raise HTTPException(500, "empty bot_text after LLM")
-        # 非 LLM 経路は text が不変なのでディスクキャッシュを通す。
-        # LLM 経路は応答が毎回違うのでキャッシュしない。
-        cached = wav_cache.get(bot_text) if not via_llm else None
-        if cached is not None:
-            wav = cached
-        else:
-            wav = await asyncio.to_thread(tts.synthesize, bot_text)
-            if not via_llm:
-                wav_cache.put(bot_text, wav)
+        wav = await asyncio.to_thread(_synthesize_speech, bot_text)
         emote = classify_emote(bot_text)
         ok = reservation.commit(Utterance(
             wav=wav,

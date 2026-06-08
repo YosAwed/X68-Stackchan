@@ -53,9 +53,6 @@ public:
                     state_         = S::Idle;
                     last_event_ms_ = now;
                     return Event::Pet;
-                } else if (now - first_ms_ >= SWIPE_WINDOW_MS) {
-                    // スワイプウィンドウ超過・別ゾーン遷移なし → キャンセル
-                    state_ = S::Idle;
                 }
                 break;
         }

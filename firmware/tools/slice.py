@@ -15,6 +15,8 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
+from face_postprocess import postprocess_image
+
 HERE = Path(__file__).resolve().parent          # firmware/tools/
 FIRMWARE = HERE.parent                          # firmware/
 SRC_DIR  = FIRMWARE / "assets" / "raw"          # 元シートを置く場所 (LittleFS には焼かない)
@@ -64,6 +66,7 @@ def main() -> None:
         img = Image.open(sheet).convert("RGB")
         for cell in slice_grid(img):
             out = OUT_DIR / f"face_{idx:02d}.jpg"
+            cell = postprocess_image(cell)
             cell.save(out, "JPEG", quality=92, optimize=True, progressive=False)
             idx += 1
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import logging
+import threading
 
 from faster_whisper import WhisperModel
 
@@ -19,9 +20,22 @@ class STT:
         self.device = device
         self.compute_type = compute_type
         self.language = language
-        log.info("Loading whisper model=%s device=%s compute=%s",
-                 model_name, device, compute_type)
-        self.model = WhisperModel(model_name, device=device, compute_type=compute_type)
+        self.model = None
+        self._lock = threading.Lock()
+
+    def _model(self) -> WhisperModel:
+        if self.model is not None:
+            return self.model
+        with self._lock:
+            if self.model is None:
+                log.info("Loading whisper model=%s device=%s compute=%s",
+                         self.model_name, self.device, self.compute_type)
+                self.model = WhisperModel(
+                    self.model_name,
+                    device=self.device,
+                    compute_type=self.compute_type,
+                )
+        return self.model
 
     def status(self) -> dict:
         return {
@@ -30,13 +44,18 @@ class STT:
             "device": self.device,
             "compute_type": self.compute_type,
             "language": self.language,
+            "loaded": self.model is not None,
         }
+
+    def warmup(self) -> None:
+        """モデルだけをロードする。実際の音声認識は行わない。"""
+        self._model()
 
     def transcribe(self, wav_bytes: bytes) -> str:
         """WAV (RIFF) のバイト列を渡してテキストを返す"""
         # faster-whisper は file path / file-like / numpy を受ける
         buf = io.BytesIO(wav_bytes)
-        segments, info = self.model.transcribe(
+        segments, info = self._model().transcribe(
             buf,
             language=self.language,
             beam_size=1,            # ロボット会話なので速度優先

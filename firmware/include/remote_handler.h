@@ -40,6 +40,19 @@ public:
         return true;
     }
 
+    void update() {
+        const bool connected = isConnected();
+        if (connected != was_connected_) {
+            was_connected_ = connected;
+            Serial.printf("[RMT ] %s\n", connected ? "connected" : "lost");
+        }
+        const uint8_t buttons = connected ? state_.buttons : 0;
+        if (buttons != last_logged_buttons_) {
+            last_logged_buttons_ = buttons;
+            Serial.printf("[RMT ] buttons=%02X\n", buttons);
+        }
+    }
+
     // リモコンが接続中 (最近パケットを受信した) か
     bool isConnected() const {
         return state_.last_ms > 0 &&
@@ -50,14 +63,21 @@ public:
     float yawNorm()   const { return applyDeadzone(state_.joy_x) / 100.0f; }
     float pitchNorm() const { return applyDeadzone(state_.joy_y) / 100.0f; }
 
-    bool btnA() const { return (state_.buttons & 0x01) != 0; }
-    bool btnB() const { return (state_.buttons & 0x02) != 0; }
+    bool btnA() const { return isConnected() && (state_.buttons & 0x01) != 0; }
+    bool btnB() const { return isConnected() && (state_.buttons & 0x02) != 0; }
 
-    // ボタン A の立ち上がりエッジ検出 (毎 loop 呼ぶ)
+    // ボタン A/B の立ち上がりエッジ検出 (毎 loop 呼ぶ)
     bool btnAEdge() {
         const bool cur = btnA();
         const bool edge = cur && !prev_btn_a_;
         prev_btn_a_ = cur;
+        return edge;
+    }
+
+    bool btnBEdge() {
+        const bool cur = btnB();
+        const bool edge = cur && !prev_btn_b_;
+        prev_btn_b_ = cur;
         return edge;
     }
 
@@ -75,6 +95,9 @@ private:
 
     State state_;
     bool  prev_btn_a_ = false;
+    bool  prev_btn_b_ = false;
+    bool  was_connected_ = false;
+    uint8_t last_logged_buttons_ = 0;
     static RemoteHandler* instance_;
 
     static float applyDeadzone(int8_t v) {

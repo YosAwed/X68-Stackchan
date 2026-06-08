@@ -21,6 +21,7 @@ def test_settings_defaults_and_types():
     assert s.MAX_SESSIONS == 16
     assert s.TTS_BACKEND == "irodori"
     assert isinstance(s.MAX_AUDIO_BYTES, int)
+    assert isinstance(s.MAX_SPEAK_CHARS, int)
     assert s.LOG_LEVEL in ("INFO", "DEBUG", "WARNING") or True  # may be customized
 
 
@@ -50,3 +51,9 @@ def test_settings_log_level_uppercased(monkeypatch):
     monkeypatch.setenv("LOG_LEVEL", "debug")
     s = Settings()
     assert s.get_log_level() == "DEBUG"
+
+
+def test_settings_max_speak_chars_helper_reflects_env(monkeypatch):
+    monkeypatch.setenv("MAX_SPEAK_CHARS", "45")
+    s = Settings()
+    assert s.get_max_speak_chars() == 45

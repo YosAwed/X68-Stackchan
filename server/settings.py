@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     SERVER_PORT: int = 8000
     LOG_LEVEL: str = "info"
     MAX_AUDIO_BYTES: int = 2 * 1024 * 1024
+    MAX_SPEAK_CHARS: int = 70
 
     # ---- Scheduler / external push ----
     SCHEDULE_ENABLED: int = Field(default=0, ge=0, le=1)
@@ -104,6 +105,9 @@ class Settings(BaseSettings):
 
     def get_log_level(self) -> str:
         return Settings().LOG_LEVEL
+
+    def get_max_speak_chars(self) -> int:
+        return Settings().MAX_SPEAK_CHARS
 
 
 # Singleton instantiated at import time.

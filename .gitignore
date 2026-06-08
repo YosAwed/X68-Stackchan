@@ -10,6 +10,11 @@ Thumbs.db
 .idea/
 *.swp
 
+# Logs
+*.log
+tts_cache/
+server/tts_cache/
+
 # Python
 __pycache__/
 *.pyc

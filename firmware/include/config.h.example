@@ -43,6 +43,11 @@ static constexpr uint8_t  SPK_VOLUME = 180; // 0..255
 #define RGB_DATA_PIN 9    // 要実機確認 — 違う場合はここを変える
 #define RGB_NUM_LEDS 12
 
+// ---- StackChan キット拡張 ----------------------------------
+// I/O expander / RGB / 頭頂タッチセンサーを使う場合は有効化する。
+#define STACKCHAN_BSP_ENABLED 1
+#define HEAD_TOUCH_ENABLED 1
+
 // ---- サーボ (首振り) ----------------------------------------
 // SCS0009 シリアルサーボ x2。StackChan 基板経由で GPIO6/7 固定。
 // サーボを使わない場合は SERVO_ENABLED を 0 にする。

@@ -70,6 +70,8 @@ public:
 
     int current() const { return current_; }
 
+    void invalidate() { current_ = 0; }
+
 private:
     int      current_ = 0;
     uint16_t bg_      = 0x0000;

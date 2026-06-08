@@ -92,6 +92,18 @@ inline constexpr int FACE_EMOTE_SLEEPY_CLOSED      = F_SLEEPING;          // 09 
 inline constexpr int FACE_EMOTE_SLEEPY_OPEN        = F_YAWN_SMALL;        // 18 あくび
 inline constexpr int FACE_EMOTE_CONFIDENT_CLOSED   = F_SOFT_SMILE;        // 11 やわらか
 inline constexpr int FACE_EMOTE_CONFIDENT_OPEN     = F_CONFIDENT;         // 19 自信
+inline constexpr int FACE_EMOTE_ANGRY_CLOSED       = F_ANGRY;             // 07 怒り
+inline constexpr int FACE_EMOTE_ANGRY_OPEN         = F_SHOUTING;          // 13 叫び怒り
+inline constexpr int FACE_EMOTE_PANIC_CLOSED       = F_PANIC;             // 16 慌て
+inline constexpr int FACE_EMOTE_PANIC_OPEN         = F_FLUSTERED;         // 32 あたふた
+inline constexpr int FACE_EMOTE_SHY_CLOSED         = F_SHY;               // 25 恥ずかしげ
+inline constexpr int FACE_EMOTE_SHY_OPEN           = F_BASHFUL;           // 31 はにかみ
+inline constexpr int FACE_EMOTE_MISCHIEF_CLOSED    = F_MISCHIEF;          // 10 イタズラ笑い
+inline constexpr int FACE_EMOTE_MISCHIEF_OPEN      = F_WINK;              // 04 ウインク
+inline constexpr int FACE_EMOTE_RELIEVED_CLOSED    = F_RELIEVED;          // 28 安堵
+inline constexpr int FACE_EMOTE_RELIEVED_OPEN      = F_SOFT_SMILE;        // 11 やわらか
+inline constexpr int FACE_EMOTE_COLD_CLOSED        = F_COLD;              // 23 冷淡
+inline constexpr int FACE_EMOTE_COLD_OPEN          = F_INDIFFERENT;       // 33 無関心
 
 // ---- 3 段階口パクの "wide" (大声音節) 顔 ----
 // 大半の emote は wide = open のまま (resolve_speak_triple 側で既定処理)。
@@ -99,6 +111,8 @@ inline constexpr int FACE_EMOTE_CONFIDENT_OPEN     = F_CONFIDENT;         // 19 
 inline constexpr int FACE_EMOTE_SURPRISED_WIDE     = F_SHOCKED;           // 26 ショック
 inline constexpr int FACE_EMOTE_EMBARRASSED_WIDE   = F_FLUSTERED;         // 32 あたふた
 inline constexpr int FACE_EMOTE_SLEEPY_WIDE        = F_YAWN_HAND;         // 35 大あくび
+inline constexpr int FACE_EMOTE_PANIC_WIDE         = F_DIZZY;             // 34 目回し
+inline constexpr int FACE_EMOTE_ANGRY_WIDE         = F_SHOUTING;          // 13 叫び怒り
 
 // emote タグ → (open, closed) のペアを返す軽量ルックアップ。
 // `out_open` / `out_closed` に書き戻す。未知タグなら既定値のまま。
@@ -122,6 +136,18 @@ inline void resolve_speak_pair(const char* emote,
                                               out_closed = FACE_EMOTE_SLEEPY_CLOSED; }
     else if (!strcmp(emote, "confident"))   { out_open = FACE_EMOTE_CONFIDENT_OPEN;
                                               out_closed = FACE_EMOTE_CONFIDENT_CLOSED; }
+    else if (!strcmp(emote, "angry"))       { out_open = FACE_EMOTE_ANGRY_OPEN;
+                                              out_closed = FACE_EMOTE_ANGRY_CLOSED; }
+    else if (!strcmp(emote, "panic"))       { out_open = FACE_EMOTE_PANIC_OPEN;
+                                              out_closed = FACE_EMOTE_PANIC_CLOSED; }
+    else if (!strcmp(emote, "shy"))         { out_open = FACE_EMOTE_SHY_OPEN;
+                                              out_closed = FACE_EMOTE_SHY_CLOSED; }
+    else if (!strcmp(emote, "mischief"))    { out_open = FACE_EMOTE_MISCHIEF_OPEN;
+                                              out_closed = FACE_EMOTE_MISCHIEF_CLOSED; }
+    else if (!strcmp(emote, "relieved"))    { out_open = FACE_EMOTE_RELIEVED_OPEN;
+                                              out_closed = FACE_EMOTE_RELIEVED_CLOSED; }
+    else if (!strcmp(emote, "cold"))        { out_open = FACE_EMOTE_COLD_OPEN;
+                                              out_closed = FACE_EMOTE_COLD_CLOSED; }
     // "neutral" やその他は既定値のまま
 }
 
@@ -139,6 +165,8 @@ inline void resolve_speak_triple(const char* emote,
     if      (!strcmp(emote, "surprised"))   out_wide = FACE_EMOTE_SURPRISED_WIDE;
     else if (!strcmp(emote, "embarrassed")) out_wide = FACE_EMOTE_EMBARRASSED_WIDE;
     else if (!strcmp(emote, "sleepy"))      out_wide = FACE_EMOTE_SLEEPY_WIDE;
+    else if (!strcmp(emote, "panic"))       out_wide = FACE_EMOTE_PANIC_WIDE;
+    else if (!strcmp(emote, "angry"))       out_wide = FACE_EMOTE_ANGRY_WIDE;
     // joy / sad / confused / confident / neutral 以外は wide = open のまま
 }
 // エラー系
