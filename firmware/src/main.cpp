@@ -45,6 +45,10 @@ static State          g_state = State::Boot;
 static bool           g_wait_release_after_auto_send = false;
 static uint32_t       g_headpat_start_ms = 0;   // Headpat 状態に入った時刻
 static uint32_t       g_headpat_last_press_ms = 0;  // 直近で isPressed=true だった時刻
+static uint32_t       g_headpat_idle_press_ms = 0;  // Idle 中の頭頂タッチ開始時刻
+static uint32_t       g_headpat_idle_cool_ms = 0;   // BSP fallback の再発火抑止
+static uint32_t       g_sleep_enter_ms = 0;
+static bool           g_sleep_head_released = false;
 static uint32_t       g_last_mic_log_ms = 0;
 static uint32_t       g_last_pull_ms    = 0;
 
@@ -150,8 +154,10 @@ static inline void updateIdleStatus() {
 // 定期発話 / 外部 push をサーバから取りに行く間隔 (Idle 中のみ)
 constexpr uint32_t PULL_INTERVAL_MS = 30000;
 
-// 一時リアクション (なでなで / シェイク) の終了時刻
+// 一時リアクション (シェイク / 持ち上げ) の表示保持。終了時刻まで Idle の
+// まばたき・マイクロ表情・pull を抑止し、表示が即上書きされないようにする。
 static uint32_t g_reaction_end_ms = 0;
+static bool     g_reaction_active = false;
 
 #if SERVO_ENABLED
 static ServoController g_servo;
@@ -184,6 +190,8 @@ static void setState(State s, int face_id = -1) {
         g_blink_started_ms = 0;
         g_micro_started_ms = 0;
     }
+    // 状態遷移時は一時リアクションの保持も解除しておく (取り残し防止)。
+    g_reaction_active = false;
 #if SERVO_ENABLED
     switch (s) {
         case State::Idle:      g_servo.goIdle();      break;
@@ -503,13 +511,28 @@ void loop() {
             if (!pressed && !g_remote.btnA()) {
                 g_wait_release_after_auto_send = false;
             }
+
             // 頭頂タッチ: スワイプ優先、ホールドでなでなで (headpat)
             // wasPressed() は即発火するためスワイプ判定と競合する。
             // g_touch.update() に一本化して Swipe/Pet を区別する。
             if (!g_wait_release_after_auto_send) {
+                const uint32_t now = millis();
                 const auto touch_ev = g_touch.update();
+                bool headpat_fallback = false;
+                if (M5StackChan.TouchSensor.isPressed()) {
+                    if (g_headpat_idle_press_ms == 0) {
+                        g_headpat_idle_press_ms = now;
+                    } else if (now - g_headpat_idle_press_ms >= 800 &&
+                               now - g_headpat_idle_cool_ms >= 2500) {
+                        headpat_fallback = true;
+                        g_headpat_idle_cool_ms = now;
+                    }
+                } else {
+                    g_headpat_idle_press_ms = 0;
+                }
                 if (touch_ev == TouchHandler::Event::Swipe) {
                     // スワイプ: 喜び表情 + 首振り + 黄色 LED バースト
+                    g_reaction_active = false;
                     g_face.show(faces::FACE_SWIPE);
 #if RGB_ENABLED
                     g_rgb.setScene(RgbScene::Swipe);
@@ -519,15 +542,60 @@ void loop() {
 #endif
                     playAckBeep();
                     break;
-                } else if (touch_ev == TouchHandler::Event::Pet) {
+                } else if (touch_ev == TouchHandler::Event::Pet || headpat_fallback) {
                     // ホールド: headpat 開始 (はにかみ → とろけ → 眠り)
+                    g_reaction_active = false;
                     playHeadpatChime();
-                    const uint32_t now = millis();
                     g_headpat_start_ms = now;
                     g_headpat_last_press_ms = now;
                     setState(State::Headpat, faces::F_BASHFUL);
                     M5StackChan.showRgbColor(255, 80, 150);
                     Serial.println("[HEADPAT] start");
+                    break;
+                }
+            }
+
+            // 一時リアクション表示中は他のアイドル挙動を抑止して表示を保持。
+            // 終了したら Idle 表情 / RGB / まばたきタイマを元に戻す。
+            if (g_reaction_active) {
+                if (millis() >= g_reaction_end_ms) {
+                    g_reaction_active = false;
+                    g_face.show(faces::FACE_IDLE);
+#if RGB_ENABLED
+                    g_rgb.setScene(RgbScene::Idle);
+#endif
+                    scheduleNextBlink();
+                    scheduleNextMicro();
+                }
+                break;
+            }
+
+            // IMU: 激しいシェイク → 目回し、持ち上げ/小突き → 驚き。
+            {
+                const auto imu_ev = g_imu.update();
+                if (imu_ev == ImuHandler::Event::Shake) {
+                    Serial.println("[IMU ] shake -> dizzy");
+                    g_face.show(faces::FACE_SHAKEN);
+#if RGB_ENABLED
+                    g_rgb.setScene(RgbScene::Shaken);
+#endif
+#if SERVO_ENABLED
+                    g_servo.startDizzyWobble();
+#endif
+                    playDizzyChime();
+                    g_reaction_active = true;
+                    g_reaction_end_ms = millis() + 1500;
+                    break;
+                }
+                if (imu_ev == ImuHandler::Event::Lift) {
+                    Serial.println("[IMU ] lift -> surprised");
+                    g_face.show(faces::F_SPARKLE_EYES);
+#if RGB_ENABLED
+                    g_rgb.setScene(RgbScene::Swipe);
+#endif
+                    playLiftBeep();
+                    g_reaction_active = true;
+                    g_reaction_end_ms = millis() + 900;
                     break;
                 }
             }
@@ -675,6 +743,9 @@ void loop() {
 
             if (held_ms >= 3000) {
                 M5StackChan.showRgbColor(0, 0, 0);
+                g_sleep_enter_ms = millis();
+                g_sleep_head_released = false;
+                g_wait_release_after_auto_send = true;
                 setState(State::Sleep, faces::F_SLEEPING);
                 Serial.println("[SLEEP] entered by headpat");
                 break;
@@ -705,11 +776,21 @@ void loop() {
         }
 
         case State::Sleep: {
-            if (!pressed && !g_remote.btnA()) {
+            const uint32_t now = millis();
+            const bool head_pressed = M5StackChan.TouchSensor.isPressed();
+            if (!head_pressed) {
+                g_sleep_head_released = true;
+            }
+            if (!pressed && !g_remote.btnA() && !head_pressed) {
                 g_wait_release_after_auto_send = false;
             }
-            if ((pressed || remote_ptt_edge) && !g_wait_release_after_auto_send) {
+            const bool head_wake =
+                head_pressed &&
+                g_sleep_head_released &&
+                now - g_sleep_enter_ms >= 1500;
+            if ((pressed || remote_ptt_edge || head_wake) && !g_wait_release_after_auto_send) {
                 Serial.println("[SLEEP] wake");
+                g_wait_release_after_auto_send = true;
                 setState(State::Idle, faces::FACE_IDLE);
             }
             break;
