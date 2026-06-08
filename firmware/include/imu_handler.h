@@ -29,13 +29,18 @@ public:
 
         const float    mag = sqrtf(ax * ax + ay * ay + az * az);
         const uint32_t now = millis();
+        const bool shake_cooling =
+            (last_shake_ms_ != 0) && (now - last_shake_ms_ < SHAKE_COOL);
 
-        // 強い動きを先に判定。シェイクのクールダウン中は Lift に漏らさず None。
+        // 強い動きを先に判定。
         if (mag > SHAKE_G) {
-            if (now - last_shake_ms_ < SHAKE_COOL) return Event::None;
+            if (shake_cooling) return Event::None;
             last_shake_ms_ = now;
             return Event::Shake;
         }
+        // シェイクの揺り戻しで加速度が中間帯に落ちても、クールダウン中は
+        // Lift を漏らさない (シェイク直後の誤「持ち上げ」反応を防ぐ)。
+        if (shake_cooling) return Event::None;
         if (mag > LIFT_G) {
             if (now - last_lift_ms_ < LIFT_COOL) return Event::None;
             last_lift_ms_ = now;
