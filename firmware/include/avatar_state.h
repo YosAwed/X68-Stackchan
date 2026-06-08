@@ -12,6 +12,7 @@ enum class State {
     Thinking,
     Speaking,
     Headpat,    // 画面上部 (頭エリア) をタッチされた状態
+    Sleep,      // なでなで継続で眠った状態。自発動作は止める
     Error,
 };
 

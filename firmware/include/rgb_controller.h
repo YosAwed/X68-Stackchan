@@ -62,6 +62,7 @@ public:
             case State::Listening: setScene(RgbScene::Listening); break;
             case State::Thinking:  setScene(RgbScene::Thinking);  break;
             case State::Speaking:  setScene(RgbScene::Speaking);  break;
+            case State::Sleep:     setScene(RgbScene::Off);       break;
             case State::Error:     setScene(RgbScene::Error);     break;
             default: break;
         }

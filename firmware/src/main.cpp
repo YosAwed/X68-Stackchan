@@ -190,6 +190,8 @@ static void setState(State s, int face_id = -1) {
         case State::Listening: g_servo.goListening(); break;
         case State::Thinking:  g_servo.goThinking();  break;
         case State::Speaking:  g_servo.goSpeaking();  break;
+        case State::Headpat:   g_servo.goHeadpat();   break;
+        case State::Sleep:     g_servo.goSleep();     break;
         default: break;
     }
 #endif
@@ -523,8 +525,8 @@ void loop() {
                     const uint32_t now = millis();
                     g_headpat_start_ms = now;
                     g_headpat_last_press_ms = now;
-                    M5StackChan.showRgbColor(180, 60, 100);
                     setState(State::Headpat, faces::F_BASHFUL);
+                    M5StackChan.showRgbColor(255, 80, 150);
                     Serial.println("[HEADPAT] start");
                     break;
                 }
@@ -671,6 +673,13 @@ void loop() {
             }
             g_face.show(target_face);   // show() は同 ID なら redraw を省く
 
+            if (held_ms >= 3000) {
+                M5StackChan.showRgbColor(0, 0, 0);
+                setState(State::Sleep, faces::F_SLEEPING);
+                Serial.println("[SLEEP] entered by headpat");
+                break;
+            }
+
             // RGB: 段階で色味、脈動 (sin 2.5Hz 相当) で「呼吸」感
             const float t_sec = held_ms / 1000.0f;
             const float pulse = 0.55f + 0.45f * sinf(t_sec * 2.5f);  // 0.10..1.00
@@ -695,15 +704,30 @@ void loop() {
             break;
         }
 
+        case State::Sleep: {
+            if (!pressed && !g_remote.btnA()) {
+                g_wait_release_after_auto_send = false;
+            }
+            if ((pressed || remote_ptt_edge) && !g_wait_release_after_auto_send) {
+                Serial.println("[SLEEP] wake");
+                setState(State::Idle, faces::FACE_IDLE);
+            }
+            break;
+        }
+
         default:
             break;
     }
 
 #if SERVO_ENABLED
-    g_servo.update();
+    if (g_state != State::Sleep) {
+        g_servo.update();
+    }
 #endif
 #if RGB_ENABLED
-    g_rgb.update();
+    if (g_state != State::Sleep && g_state != State::Headpat) {
+        g_rgb.update();
+    }
 #endif
 
     delay(5);

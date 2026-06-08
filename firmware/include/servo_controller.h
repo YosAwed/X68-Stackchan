@@ -12,6 +12,7 @@
 #include <Arduino.h>
 #include <HardwareSerial.h>
 #include <M5Unified.h>
+#include <cmath>
 
 #ifndef SERVO_STATE_MOTION_ENABLED
 #define SERVO_STATE_MOTION_ENABLED 0
@@ -145,11 +146,41 @@ public:
 #endif
     }
 
+    void goHeadpat() {
+        target_yaw_   = 0.0f;
+        target_pitch_ = 0.08f;
+        lerp_speed_   = LERP_FAST;
+        in_idle_      = false;
+        idle_nudge_return_ms_ = 0;
+    }
+
+    void goSleep() {
+        current_yaw_   = 0.0f;
+        current_pitch_ = 0.0f;
+        target_yaw_    = 0.0f;
+        target_pitch_  = 0.0f;
+        lerp_speed_    = LERP_FAST;
+        in_idle_       = false;
+        waggle_start_ms_ = 0;
+        dizzy_start_ms_  = 0;
+        idle_nudge_return_ms_ = 0;
+        writePos(ID_YAW,   YAW_CTR,   500);
+        writePos(ID_PITCH, PITCH_CTR, 500);
+        torque_release_at_ms_ = millis() + 800;
+    }
+
     // スワイプ撫で: 右→左→中央の首振りアニメーション (~1 秒)
     void startHappyWaggle() {
 #if SERVO_WAGGLE_ENABLED
         waggle_start_ms_ = millis();
         in_idle_         = false;
+#endif
+    }
+
+    void startDizzyWobble() {
+#if SERVO_WAGGLE_ENABLED
+        dizzy_start_ms_ = millis();
+        in_idle_        = false;
 #endif
     }
 
@@ -191,6 +222,19 @@ public:
             }
         }
 
+        if (dizzy_start_ms_ > 0) {
+            const uint32_t elapsed = now - dizzy_start_ms_;
+            if (elapsed < DIZZY_DURATION_MS) {
+                const float t = elapsed / 1000.0f;
+                target_yaw_   = sinf(t * 12.0f) * 0.25f;
+                target_pitch_ = -0.12f + sinf(t * 6.0f) * 0.06f;
+                lerp_speed_   = LERP_FAST;
+            } else {
+                dizzy_start_ms_ = 0;
+                goIdle();
+            }
+        }
+
         // Idle 時: たまに小さく動き、短時間で中央へ戻る。
 #if SERVO_IDLE_MOTION_ENABLED
         if (idle_nudge_return_ms_ != 0 && now >= idle_nudge_return_ms_) {
@@ -205,11 +249,11 @@ public:
             idle_interval_ms_ = idleMotionInterval();
 #if SERVO_IDLE_MOTION_ENABLED
             const int yaw_dir = (rand() & 1) ? 1 : -1;
-            const int yaw_mag = 2 + (rand() % 2);
-            target_yaw_   = (float)(yaw_dir * yaw_mag) * 0.060f;
-            target_pitch_ = (float)(rand() % 3 - 1) * 0.070f;
-            lerp_speed_   = 0.08f;
-            idle_nudge_return_ms_ = now + 1600;
+            const int yaw_mag = 1 + (rand() % 2);
+            target_yaw_   = (float)(yaw_dir * yaw_mag) * 0.025f;
+            target_pitch_ = (float)(rand() % 3 - 1) * 0.020f;
+            lerp_speed_   = 0.06f;
+            idle_nudge_return_ms_ = now + 1200;
 #if SERVO_IDLE_MOTION_DEBUG
             Serial.printf("[SRV ] idle nudge yaw=%.3f pitch=%.3f\n", target_yaw_, target_pitch_);
 #endif
@@ -286,16 +330,18 @@ private:
     uint32_t last_send_ms_     = 0;
     uint32_t idle_interval_ms_ = 3000;
     uint32_t waggle_start_ms_  = 0;
+    uint32_t dizzy_start_ms_   = 0;
     uint32_t idle_nudge_return_ms_ = 0;
     uint32_t torque_release_at_ms_ = 0;
     int      last_sent_yaw_pos_    = -1;
     int      last_sent_pitch_pos_  = -1;
     bool     torque_enabled_       = false;
     static constexpr uint32_t WAGGLE_DURATION_MS = 1050;  // 3 phases × 350 ms
+    static constexpr uint32_t DIZZY_DURATION_MS  = 1400;
 
     uint32_t idleMotionInterval() const {
 #if SERVO_IDLE_MOTION_ENABLED
-        return 3500 + (uint32_t)(rand() % 3000);
+        return 12000 + (uint32_t)(rand() % 13000);
 #else
         return 3000;
 #endif
