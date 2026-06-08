@@ -170,7 +170,7 @@ private:
     void animShaken(uint32_t dt) {
         // 赤点滅 (200ms オン/オフ)
         bool on = (dt / 200) % 2 == 0;
-        fill_solid(leds_, RGB_NUM_LEDS, on ? CHSV(0, 255, 180) : CRGB::Black);
+        fill_solid(leds_, RGB_NUM_LEDS, on ? CRGB(CHSV(0, 255, 180)) : CRGB::Black);
     }
 
     void animError(uint32_t dt) {

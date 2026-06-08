@@ -55,6 +55,9 @@ static uint32_t g_wifi_backoff_ms      = 2000;   // 初期 2 秒、倍々で 30 
 // 診断ステータス最終出力時刻
 static uint32_t g_last_status_ms = 0;
 
+// 診断用定期ステータス出力間隔（シリアルでヒープ/WiFi/uptimeを確認しやすくする）
+constexpr uint32_t STATUS_INTERVAL_MS = 15000;
+
 // ---- Idle 中のまばたき ----
 // 4〜8 秒のランダム間隔で目を閉じた表情 (FACE_BLINK) を 150 ms 表示する。
 // Speaking / Listening / Thinking 中は動かない (state が Idle の時だけ走る)。
@@ -146,9 +149,6 @@ static inline void updateIdleStatus() {
 
 // 定期発話 / 外部 push をサーバから取りに行く間隔 (Idle 中のみ)
 constexpr uint32_t PULL_INTERVAL_MS = 30000;
-
-// 診断用定期ステータス出力間隔（シリアルでヒープ/WiFi/uptimeを確認しやすくする）
-constexpr uint32_t STATUS_INTERVAL_MS = 15000;
 
 // 一時リアクション (シェイク / 持ち上げ) の表示保持。終了時刻まで Idle の
 // まばたき・マイクロ表情・pull を抑止し、表示が即上書きされないようにする。

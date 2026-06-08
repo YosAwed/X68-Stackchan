@@ -82,7 +82,8 @@ private:
         return (float)v;
     }
 
-    static void onRecv(const uint8_t* mac, const uint8_t* data, int len) {
+    static void onRecv(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
+        (void)info;
         if (!instance_ || len < (int)sizeof(Packet)) return;
         const Packet* pkt = reinterpret_cast<const Packet*>(data);
         if (pkt->magic[0] != MAGIC[0] || pkt->magic[1] != MAGIC[1]) return;
