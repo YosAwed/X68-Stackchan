@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 
 import httpx
-
 from settings import settings
 
 log = logging.getLogger(__name__)

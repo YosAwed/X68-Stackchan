@@ -5,14 +5,13 @@ These run without any heavy ML dependencies.
 
 from __future__ import annotations
 
-import os
-
 import pytest
 from pydantic import ValidationError
 
 # We import after possible monkeypatching in other tests, but this module
 # can be imported directly.
-from settings import Settings, settings as _global_settings
+from settings import Settings
+from settings import settings as _global_settings
 
 
 def test_settings_defaults_and_types():
