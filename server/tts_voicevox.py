@@ -7,17 +7,17 @@ docs/setup-macmini.md 参照。
 from __future__ import annotations
 
 import logging
-import os
 
 import httpx
+from settings import settings
 
 log = logging.getLogger(__name__)
 
 
 class TTS:
     def __init__(self, timeout_s: float = 30.0):
-        host = os.getenv("VOICEVOX_HOST", "http://127.0.0.1:50021")
-        speaker = int(os.getenv("VOICEVOX_SPEAKER", "3"))
+        host = settings.VOICEVOX_HOST
+        speaker = settings.VOICEVOX_SPEAKER
 
         self.host = host.rstrip("/")
         self.speaker = speaker

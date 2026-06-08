@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 import threading
 import time
@@ -18,6 +17,7 @@ from typing import Deque, Dict, List
 import httpx
 from history_store import HistoryStore
 from persona import SYSTEM_PROMPT
+from settings import settings
 
 _WEEKDAY_JA = ("月", "火", "水", "木", "金", "土", "日")
 
@@ -196,7 +196,7 @@ class LLM:
         ]
         # 3 つ目: 時間帯ごとの気分フレーバ。空文字なら付けない (LLM への
         # ノイズを増やさない)。env で無効化したい場合 LLM_TIME_FLAVOR=0。
-        if os.getenv("LLM_TIME_FLAVOR", "1") == "1":
+        if settings.is_time_flavor_enabled():
             flavor = _time_of_day_hint()
             if flavor:
                 messages.append({"role": "system", "content": flavor})

@@ -13,20 +13,17 @@
 // な抽象クラスを実体化しようとして main.cpp.o が落ちる。
 #include <LittleFS.h>
 #include <M5Unified.h>
-#include "config.h"
-// 頭頂タッチセンサー (Si12T, I2C) を扱う公式 BSP。
-// サーボは本ファーム側で制御するため M5StackChan.begin() は使わず、
-// TouchSensor だけを初期化・更新する。
-#if STACKCHAN_BSP_ENABLED
+// 頭頂タッチセンサー (Si12T, I2C) を扱う公式 BSP。M5StackChan.begin() で
+// I/O expander + RGB + TouchSensor をまとめて初期化、loop で update() を
+// 呼ぶと M5StackChan.TouchSensor が Button_Class 互換で wasPressed() などを
+// 提供する。
 #include <M5StackChan.h>
-#endif
 #include <esp_random.h>
-#include <esp_wifi.h>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
-#include <time.h>
 
+#include "config.h"
 #include "avatar_state.h"
 #include "audio_recorder.h"
 #include "http_client.h"
@@ -48,13 +45,18 @@ static State          g_state = State::Boot;
 static bool           g_wait_release_after_auto_send = false;
 static uint32_t       g_headpat_start_ms = 0;   // Headpat 状態に入った時刻
 static uint32_t       g_headpat_last_press_ms = 0;  // 直近で isPressed=true だった時刻
-static uint32_t       g_head_touch_started_ms = 0;
 static uint32_t       g_last_mic_log_ms = 0;
 static uint32_t       g_last_pull_ms    = 0;
-static uint32_t       g_status_overlay_until_ms = 0;
-static bool           g_status_overlay_visible  = false;
-static uint32_t       g_last_ready_ok_ms = 0;
-static String         g_caption_text;
+
+// WiFi ランタイム回復用バックオフ状態 (ensureWiFiConnected で使用)
+static uint32_t g_next_wifi_attempt_ms = 0;
+static uint32_t g_wifi_backoff_ms      = 2000;   // 初期 2 秒、倍々で 30 秒上限
+
+// 診断ステータス最終出力時刻
+static uint32_t g_last_status_ms = 0;
+
+// 診断用定期ステータス出力間隔（シリアルでヒープ/WiFi/uptimeを確認しやすくする）
+constexpr uint32_t STATUS_INTERVAL_MS = 15000;
 
 // ---- Idle 中のまばたき ----
 // 4〜8 秒のランダム間隔で目を閉じた表情 (FACE_BLINK) を 150 ms 表示する。
@@ -72,15 +74,13 @@ static inline void scheduleNextBlink() {
 }
 
 // ---- Idle 中のマイクロ表情 (気分のゆらぎ) ----
-// 8〜15 秒のランダム間隔で全 36 表情を順に使い切る。
+// 8〜15 秒のランダム間隔で 5 種の表情を 800 ms 表示する。
 // blink と排他: 片方が動いている間は他方をトリガしない。
 static constexpr uint32_t MICRO_HOLD_MS = 800;
 static constexpr uint32_t MICRO_MIN_MS  = 8000;
 static constexpr uint32_t MICRO_MAX_MS  = 15000;
 static uint32_t g_next_micro_ms    = 0;
 static uint32_t g_micro_started_ms = 0;
-static uint64_t g_idle_micro_seen_mask = 0;
-static int      g_last_micro_face = 0;
 
 static inline void scheduleNextMicro() {
     const uint32_t span = MICRO_MAX_MS - MICRO_MIN_MS;
@@ -88,100 +88,11 @@ static inline void scheduleNextMicro() {
     g_micro_started_ms = 0;
 }
 
-static bool isNightMode() {
-    struct tm tm;
-    if (!getLocalTime(&tm, 5)) return false;
-    return tm.tm_hour >= 22 || tm.tm_hour < 7;
-}
-
-static int idleBaseFace() {
-    return isNightMode() ? faces::F_SLEEPING : faces::FACE_IDLE;
-}
-
-static int pickIdleMicroFace() {
-    if (isNightMode()) {
-        static const int kSleepyFaces[] = {
-            faces::F_SLEEPING,
-            faces::F_YAWN_SMALL,
-            faces::F_YAWN_HAND,
-            faces::F_BORED,
-            faces::F_RELIEVED,
-        };
-        constexpr int kN = sizeof(kSleepyFaces) / sizeof(kSleepyFaces[0]);
-        int next = kSleepyFaces[rand() % kN];
-        if (next == g_last_micro_face) next = kSleepyFaces[(rand() + 1) % kN];
-        g_last_micro_face = next;
-        return next;
-    }
-
-    static const int kMicroFaces[] = {
-        faces::F_NEUTRAL,
-        faces::F_SMILE,
-        faces::F_LAUGH_EYES_CLOSED,
-        faces::F_WINK,
-        faces::F_SURPRISED,
-        faces::F_EMBARRASSED,
-        faces::F_ANGRY,
-        faces::F_SAD,
-        faces::F_SLEEPING,
-        faces::F_MISCHIEF,
-        faces::F_SOFT_SMILE,
-        faces::F_STERN,
-        faces::F_SHOUTING,
-        faces::F_LAUGH_OPEN,
-        faces::F_QUESTION,
-        faces::F_PANIC,
-        faces::F_POUT,
-        faces::F_YAWN_SMALL,
-        faces::F_CONFIDENT,
-        faces::F_CONCERNED,
-        faces::F_THINKING_POSE,
-        faces::F_BORED,
-        faces::F_COLD,
-        faces::F_CRYING,
-        faces::F_SHY,
-        faces::F_SHOCKED,
-        faces::F_SPARKLE_EYES,
-        faces::F_RELIEVED,
-        faces::F_DETERMINED,
-        faces::F_JOY,
-        faces::F_BASHFUL,
-        faces::F_FLUSTERED,
-        faces::F_INDIFFERENT,
-        faces::F_DIZZY,
-        faces::F_YAWN_HAND,
-        faces::F_WAVE,
-    };
-    constexpr int kN = sizeof(kMicroFaces) / sizeof(kMicroFaces[0]);
-    static_assert(kN == 36, "idle micro face table must cover all faces");
-
-    int candidates[36];
-    int candidate_count = 0;
-    for (int i = 0; i < kN; ++i) {
-        const uint64_t bit = 1ULL << i;
-        if ((g_idle_micro_seen_mask & bit) == 0 && kMicroFaces[i] != g_last_micro_face) {
-            candidates[candidate_count++] = i;
-        }
-    }
-    if (candidate_count == 0) {
-        g_idle_micro_seen_mask = 0;
-        for (int i = 0; i < kN; ++i) {
-            if (kMicroFaces[i] != g_last_micro_face) {
-                candidates[candidate_count++] = i;
-            }
-        }
-    }
-    const int idx = candidates[rand() % candidate_count];
-    g_idle_micro_seen_mask |= 1ULL << idx;
-    g_last_micro_face = kMicroFaces[idx];
-    return g_last_micro_face;
-}
-
 static inline void updateIdleBlink() {
     const uint32_t now = millis();
     if (g_blink_started_ms != 0) {
         if (now - g_blink_started_ms >= BLINK_HOLD_MS) {
-            g_face.show(idleBaseFace());
+            g_face.show(faces::FACE_IDLE);
             scheduleNextBlink();
         }
         return;
@@ -197,16 +108,43 @@ static inline void updateIdleMicro() {
     const uint32_t now = millis();
     if (g_micro_started_ms != 0) {
         if (now - g_micro_started_ms >= MICRO_HOLD_MS) {
-            g_face.show(idleBaseFace());
+            g_face.show(faces::FACE_IDLE);
             scheduleNextMicro();
         }
         return;
     }
     if (g_blink_started_ms != 0) return;   // まばたき中はトリガしない
     if (now >= g_next_micro_ms) {
-        g_face.show(pickIdleMicroFace());
+        static const int kMicroFaces[] = {
+            faces::F_SOFT_SMILE,
+            faces::F_SPARKLE_EYES,
+            faces::F_BASHFUL,
+            faces::F_BORED,
+            faces::F_YAWN_SMALL,
+        };
+        constexpr int kN = sizeof(kMicroFaces) / sizeof(kMicroFaces[0]);
+        g_face.show(kMicroFaces[rand() % kN]);
         g_micro_started_ms = now;
     }
+}
+
+// ---- Idle 定期診断ステータス（シリアルログ強化） ----
+// 15 秒おきに WiFi 状態・ヒープ使用量・稼働時間を出す。
+// これにより WiFi 回復の成否やメモリ圧迫をデバッグしやすくなる。
+static inline void updateIdleStatus() {
+    const uint32_t now = millis();
+    if (now - g_last_status_ms < STATUS_INTERVAL_MS) return;
+    g_last_status_ms = now;
+
+    const bool wifi_ok = (WiFi.status() == WL_CONNECTED);
+    const uint32_t free_heap  = ESP.getFreeHeap();
+    const uint32_t free_psram = ESP.getFreePsram();
+
+    Serial.printf("[STATUS] wifi=%d heap=%u psram=%u uptime=%lus\n",
+                  wifi_ok ? 1 : 0,
+                  (unsigned)free_heap,
+                  (unsigned)free_psram,
+                  (unsigned long)(now / 1000));
 }
 
 // 定期発話 / 外部 push をサーバから取りに行く間隔 (Idle 中のみ)
@@ -234,111 +172,9 @@ static void clearSideStatus() {
                         M5.Display.height(), X68_BG);
 }
 
-static void removeLastUtf8Char(String& s) {
-    int i = s.length() - 1;
-    while (i > 0 && ((uint8_t)s[i] & 0xC0) == 0x80) --i;
-    s.remove(i);
-}
-
-static String fitCaptionText(const String& text, int max_width) {
-    String out = text;
-    out.replace("\r", " ");
-    out.replace("\n", " ");
-    M5.Display.setFont(&fonts::lgfxJapanGothic_12);
-    if (M5.Display.textWidth(out) <= max_width) return out;
-
-    const String suffix = "...";
-    while (out.length() > 0 && M5.Display.textWidth(out + suffix) > max_width) {
-        removeLastUtf8Char(out);
-    }
-    return out + suffix;
-}
-
-static void drawCaptionOverlay() {
-    if (g_caption_text.length() == 0) return;
-    constexpr int margin = 6;
-    constexpr int h = 24;
-    const int y = M5.Display.height() - h;
-    M5.Display.fillRect(0, y, M5.Display.width(), h, X68_BG);
-    M5.Display.setFont(&fonts::lgfxJapanGothic_12);
-    M5.Display.setTextSize(1);
-    M5.Display.setTextColor(0xFFFF, X68_BG);
-    M5.Display.setTextDatum(textdatum_t::top_left);
-    M5.Display.drawString(fitCaptionText(g_caption_text, M5.Display.width() - margin * 2),
-                          margin, y + 5);
-    M5.Display.setFont(&fonts::Font0);
-}
-
-static void clearCaptionOverlay() {
-    g_caption_text = "";
-    constexpr int h = 24;
-    M5.Display.fillRect(0, M5.Display.height() - h, M5.Display.width(), h, X68_BG);
-}
-
-static void showStatusOverlay() {
-    g_status_overlay_until_ms = millis() + 2200;
-    g_status_overlay_visible = true;
-
-    M5.Display.fillScreen(X68_BG);
-    M5.Display.setTextSize(1);
-    M5.Display.setTextColor(0xFFFF, X68_BG);
-    M5.Display.setCursor(14, 14);
-    M5.Display.println("STACKCHAN STATUS");
-
-    M5.Display.setTextColor(0xBDF7, X68_BG);
-    M5.Display.setCursor(14, 40);
-    if (WiFi.status() == WL_CONNECTED) {
-        M5.Display.printf("WiFi : OK  ch=%d  %ddBm\n", WiFi.channel(), WiFi.RSSI());
-        M5.Display.setCursor(14, 58);
-        M5.Display.printf("IP   : %s\n", WiFi.localIP().toString().c_str());
-    } else {
-        M5.Display.println("WiFi : disconnected");
-        M5.Display.setCursor(14, 58);
-        M5.Display.println("IP   : -");
-    }
-
-    M5.Display.setCursor(14, 82);
-    M5.Display.printf("Server: %s:%u\n", SERVER_HOST, (unsigned)SERVER_PORT);
-
-    const auto& rs = g_remote.raw();
-    M5.Display.setCursor(14, 106);
-    if (g_remote.isConnected()) {
-        const uint32_t age = millis() - rs.last_ms;
-        M5.Display.printf("Remote: OK  btn=%02X  age=%ums\n", rs.buttons, (unsigned)age);
-    } else {
-        M5.Display.println("Remote: disconnected");
-    }
-
-    const uint32_t uptime = millis() / 1000;
-    M5.Display.setCursor(14, 130);
-    M5.Display.printf("Uptime: %02u:%02u:%02u\n",
-                      (unsigned)(uptime / 3600),
-                      (unsigned)((uptime / 60) % 60),
-                      (unsigned)(uptime % 60));
-    Serial.println("[UI  ] status overlay");
-}
-
-static bool updateStatusOverlay() {
-    if (!g_status_overlay_visible) return false;
-    if ((int32_t)(millis() - g_status_overlay_until_ms) < 0) return true;
-    g_status_overlay_visible = false;
-    g_face.invalidate();
-    g_face.show(idleBaseFace());
-    clearSideStatus();
-    scheduleNextBlink();
-    scheduleNextMicro();
-    return false;
-}
-
 static void setState(State s, int face_id = -1) {
     g_state = s;
-    if (s != State::Idle) {
-        g_status_overlay_until_ms = 0;
-        g_status_overlay_visible = false;
-    }
-    if (face_id > 0) {
-        g_face.show((s == State::Idle && face_id == faces::FACE_IDLE) ? idleBaseFace() : face_id);
-    }
+    if (face_id > 0) g_face.show(face_id);
     clearSideStatus();
     // Idle に入る時にまばたき/マイクロ表情タイマを初期化、Idle 以外に出る時は停止。
     if (s == State::Idle) {
@@ -348,7 +184,7 @@ static void setState(State s, int face_id = -1) {
         g_blink_started_ms = 0;
         g_micro_started_ms = 0;
     }
-#if SERVO_ENABLED && (!defined(SERVO_RELAX_ONLY) || !SERVO_RELAX_ONLY)
+#if SERVO_ENABLED
     switch (s) {
         case State::Idle:      g_servo.goIdle();      break;
         case State::Listening: g_servo.goListening(); break;
@@ -410,82 +246,42 @@ static void showReadyError(const ReadyResponse& ready) {
     playServerErrorBeep();
 }
 
-static void showPttNotReady(const ReadyResponse& ready) {
-    setState(State::Error, ready.http_status == 0 ? faces::FACE_ERR_TIMEOUT : faces::FACE_ERR_SERVER);
-    M5.Display.fillScreen(X68_BG);
-    M5.Display.setFont(&fonts::Font0);
-    M5.Display.setTextSize(1);
-    M5.Display.setTextColor(0xF800, X68_BG);
-    M5.Display.setCursor(12, 80);
-    M5.Display.println("SERVER NOT READY");
-    M5.Display.setTextColor(0xFFFF, X68_BG);
-    M5.Display.setCursor(12, 106);
-    M5.Display.printf("HTTP: %d\n", ready.http_status);
-    M5.Display.setCursor(12, 126);
-    M5.Display.println("PTT canceled");
-    Serial.printf("[PTT ] canceled: /ready HTTP %d\n", ready.http_status);
-    playServerErrorBeep();
-    delay(1200);
-    setState(State::Idle, faces::FACE_IDLE);
-}
-
-static bool ensureReadyForPtt() {
-#if defined(OFFLINE_MODE) && OFFLINE_MODE
-    return true;
-#else
-    if (WiFi.status() != WL_CONNECTED) {
-        ReadyResponse r;
-        r.http_status = 0;
-        showPttNotReady(r);
-        return false;
-    }
-    constexpr uint32_t READY_CACHE_MS = 15000;
-    if (g_last_ready_ok_ms != 0 && millis() - g_last_ready_ok_ms < READY_CACHE_MS) {
-        return true;
-    }
-    ReadyResponse ready = ChatClient::ready();
-    if (!ready.ok) {
-        showPttNotReady(ready);
-        return false;
-    }
-    g_last_ready_ok_ms = millis();
-    return true;
-#endif
-}
-
-static bool connectWiFi() {
+static bool connectWiFi(uint32_t timeout_ms = 15000) {
     WiFi.mode(WIFI_STA);
-    WiFi.setSleep(false);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
     const uint32_t t0 = millis();
     while (WiFi.status() != WL_CONNECTED) {
         delay(200);
-        if (millis() - t0 > 15000) return false;
+        if (millis() - t0 > timeout_ms) return false;
     }
-    esp_wifi_set_ps(WIFI_PS_NONE);
-    configTime(9 * 3600, 0, "ntp.nict.jp", "pool.ntp.org", "time.google.com");
-    Serial.printf("WiFi connected: ip=%s ch=%d mac=%s\n",
-                  WiFi.localIP().toString().c_str(),
-                  WiFi.channel(),
-                  WiFi.macAddress().c_str());
+    Serial.printf("WiFi connected: %s\n", WiFi.localIP().toString().c_str());
     return true;
 }
 
-static bool ensureSpeakerReady() {
-    if (!M5.Speaker.isEnabled()) {
-        Serial.println("[AUD ] speaker is disabled");
-        return false;
+// ランタイムで WiFi が落ちた後の回復を試みる（Idle 中のみ呼ぶ）。
+// 初期起動時は connectWiFi() の厳密な 15 秒タイムアウトのまま fail-fast する。
+// ここでは短めのタイムアウト + 指数バックオフで loop をブロックしすぎないようにする。
+static bool ensureWiFiConnected() {
+    if (WiFi.status() == WL_CONNECTED) return true;
+
+    const uint32_t now = millis();
+    if (now < g_next_wifi_attempt_ms) return false;
+
+    // ランタイム回復は短め (4 秒) に抑える。長時間ブロックするとまばたき等に影響。
+    const bool ok = connectWiFi(4000);
+    if (ok) {
+        Serial.println("[WiFi] reconnected");
+        // 成功したらバックオフをリセット + 次フレームで即ステータスを出して確認しやすくする
+        g_wifi_backoff_ms = 2000;
+        g_next_wifi_attempt_ms = 0;
+        g_last_status_ms = millis() - STATUS_INTERVAL_MS - 1;
+        return true;
     }
-    M5.Speaker.stop();
-    M5.Speaker.end();
-    delay(30);
-    if (!M5.Speaker.begin()) {
-        Serial.println("[AUD ] speaker begin failed");
-        return false;
-    }
-    delay(30);
-    M5.Speaker.setVolume(SPK_VOLUME);
-    return true;
+
+    // 失敗 → 次回までの間隔を伸ばす (2s → 4s → 8s ... cap 30s)
+    if (g_wifi_backoff_ms < 30000) g_wifi_backoff_ms *= 2;
+    g_next_wifi_attempt_ms = now + g_wifi_backoff_ms;
+    return false;
 }
 
 // 応答 WAV を再生しながら、PCM の RMS で口パク (口閉/口開/大開 3 段階)
@@ -525,33 +321,17 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size,
         }
     }
     if (wav_bits != 16 || wav_channels == 0 || wav_block < 2) {
-        if (!ensureSpeakerReady()) return;
-        if (!M5.Speaker.playWav(wav, size, 1, -1, true)) {
-            Serial.printf("[AUD ] playWav failed (fmt bits=%u channels=%u block=%u size=%u)\n",
-                          wav_bits, wav_channels, wav_block, (unsigned)size);
-            return;
-        }
-        drawCaptionOverlay();
+        M5.Speaker.setVolume(SPK_VOLUME);
+        M5.Speaker.playWav(wav, size);
         while (M5.Speaker.isPlaying()) delay(4);
         return;
     }
     pcm_bytes -= pcm_bytes % wav_block;
     const size_t frames = pcm_bytes / wav_block;
 
-    if (!ensureSpeakerReady()) return;
+    M5.Speaker.setVolume(SPK_VOLUME);
     const uint32_t t0 = millis();
-    if (!M5.Speaker.playWav(wav, size, 1, -1, true)) {
-        Serial.printf("[AUD ] playWav failed (sr=%u bits=%u channels=%u bytes=%u)\n",
-                      (unsigned)wav_sr, wav_bits, wav_channels, (unsigned)size);
-        return;
-    }
-    Serial.printf("[AUD ] playWav sr=%u bits=%u channels=%u bytes=%u ms<=%u\n",
-                  (unsigned)wav_sr, wav_bits, wav_channels, (unsigned)size,
-                  (unsigned)(wav_sr ? ((frames * 1000ULL) / wav_sr) : 0));
-    const uint32_t max_play_ms =
-        (wav_sr > 0 && frames > 0)
-            ? (uint32_t)((frames * 1000ULL) / wav_sr) + 2000U
-            : 30000U;
+    M5.Speaker.playWav(wav, size);
 
     // 3 段階閾値: <LOW=口閉じ、<HIGH=口開け、>=HIGH=大開け (climax 音節)
     // RMS_THRESH=2200 の旧運用と同等の頻度で open が出る帯域に挟む。
@@ -567,7 +347,7 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size,
     int face_wide  = faces::FACE_SPEAK_WIDE;
     faces::resolve_speak_triple(emote, face_close, face_open, face_wide);
 
-    while (M5.Speaker.isPlaying() && millis() - t0 < max_play_ms) {
+    while (M5.Speaker.isPlaying()) {
         const uint32_t now = millis();
         if (now - last_update >= 40) {           // 25 fps 相当で更新
             last_update = now;
@@ -587,7 +367,6 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size,
                                                 : face_close;
             if (next != last_face) {
                 g_face.show(next);
-                drawCaptionOverlay();
                 last_face = next;
             }
 #if SERVO_ENABLED
@@ -604,13 +383,8 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size,
         }
         delay(4);
     }
-    if (M5.Speaker.isPlaying()) {
-        Serial.printf("[WARN] speaker playback timeout (%ums)\n", (unsigned)max_play_ms);
-        M5.Speaker.stop();
-    }
     // 締めは口閉じ (emote ペアに合わせる)
     g_face.show(face_close);
-    drawCaptionOverlay();
 }
 
 static void handleHttpError(int status) {
@@ -636,24 +410,11 @@ static void handleHttpError(int status) {
 
 void setup() {
     auto cfg = M5.config();
-    cfg.internal_spk = true;
-    cfg.internal_mic = true;
-    cfg.output_power = true;
     M5.begin(cfg);
-    M5.Display.setBrightness(85);
-    // 公式 StackChan キット拡張のうち、頭頂 Si12T タッチだけを初期化。
-    // M5StackChan.begin() はサーボも初期化するため使わない。
-#if STACKCHAN_BSP_ENABLED
-    M5StackChan.TouchSensor.begin();
-#endif
+    // 公式 StackChan キット拡張 (I/O expander, RGB, 頭頂 Si12T タッチ) を初期化。
+    // M5Unified 配下の I2C バスをそのまま借りるので順序的に M5.begin() の後で。
+    M5StackChan.begin();
     Serial.begin(115200);
-    Serial.printf("[M5  ] board=%d speaker=%d mic=%d\n",
-                  (int)M5.getBoard(),
-                  M5.Speaker.isEnabled() ? 1 : 0,
-                  M5.Mic.isEnabled() ? 1 : 0);
-    if (!M5.Speaker.isEnabled()) {
-        Serial.println("[WARN] speaker disabled by M5Unified");
-    }
 
     // (1) Human68k 風スプラッシュ + 起動チャイム (画面と音は同時進行)
     playBootChime();
@@ -696,7 +457,6 @@ void setup() {
         showReadyError(ready);
         return;
     }
-    g_last_ready_ok_ms = millis();
     Serial.printf("[READY] server ok: %s\n", ready.body.c_str());
 #endif
 
@@ -706,13 +466,15 @@ void setup() {
     randomSeed(seed);
     srand(seed);   // upstream の scheduleNextBlink が rand() を使う
     setState(State::Idle, faces::FACE_IDLE);
+
+    // 起動直後の初回ステータス出力（診断強化）。WiFi/ヒープが一目で分かる。
+    g_last_status_ms = millis() - STATUS_INTERVAL_MS;
+    updateIdleStatus();
 }
 
 void loop() {
     M5.update();
-#if STACKCHAN_BSP_ENABLED
-    M5StackChan.TouchSensor.update();   // 頭頂タッチセンサー (Si12T) のポーリング
-#endif
+    M5StackChan.update();   // 頭頂タッチセンサー (Si12T) のポーリング
 
     // CoreS3 SE は物理ボタンが無く、M5Unified の virtual button マッピングも
     // デフォルトでは効かない (touch 検知はできるが BtnA/B/C は発火しない)。
@@ -722,9 +484,7 @@ void loop() {
         const auto t = M5.Touch.getDetail(0);
         pressed = t.isPressed();
     }
-    g_remote.update();
     const bool remote_ptt_edge = g_remote.btnAEdge();  // 毎フレーム呼ぶ (エッジ追跡)
-    const bool remote_status_edge = g_remote.btnBEdge();
 
 #if defined(OFFLINE_MODE) && OFFLINE_MODE
     {
@@ -741,27 +501,12 @@ void loop() {
             if (!pressed && !g_remote.btnA()) {
                 g_wait_release_after_auto_send = false;
             }
-            if (remote_status_edge) {
-                showStatusOverlay();
-                break;
-            }
-            if (updateStatusOverlay()) {
-                break;
-            }
             // 頭頂タッチ: スワイプ優先、ホールドでなでなで (headpat)
             // wasPressed() は即発火するためスワイプ判定と競合する。
             // g_touch.update() に一本化して Swipe/Pet を区別する。
             if (!g_wait_release_after_auto_send) {
-#if HEAD_TOUCH_ENABLED && STACKCHAN_BSP_ENABLED
-                const bool head_pressed = M5StackChan.TouchSensor.isPressed();
-                if (!head_pressed) {
-                    g_head_touch_started_ms = 0;
-                } else if (g_head_touch_started_ms == 0) {
-                    g_head_touch_started_ms = millis();
-                }
-
-                if (M5StackChan.TouchSensor.wasSwiped()) {
-                    g_head_touch_started_ms = 0;
+                const auto touch_ev = g_touch.update();
+                if (touch_ev == TouchHandler::Event::Swipe) {
                     // スワイプ: 喜び表情 + 首振り + 黄色 LED バースト
                     g_face.show(faces::FACE_SWIPE);
 #if RGB_ENABLED
@@ -772,21 +517,17 @@ void loop() {
 #endif
                     playAckBeep();
                     break;
-                } else if (head_pressed && millis() - g_head_touch_started_ms >= 800) {
+                } else if (touch_ev == TouchHandler::Event::Pet) {
                     // ホールド: headpat 開始 (はにかみ → とろけ → 眠り)
                     playHeadpatChime();
                     const uint32_t now = millis();
-                    g_head_touch_started_ms = 0;
                     g_headpat_start_ms = now;
                     g_headpat_last_press_ms = now;
-#if RGB_ENABLED
-                    g_rgb.setScene(RgbScene::Pet);
-#endif
+                    M5StackChan.showRgbColor(180, 60, 100);
                     setState(State::Headpat, faces::F_BASHFUL);
                     Serial.println("[HEADPAT] start");
                     break;
                 }
-#endif
             }
             // リモコン: ジョイスティックでサーボ手動操作
 #if SERVO_ENABLED
@@ -800,9 +541,6 @@ void loop() {
 #endif
             // LCD タッチ または リモコン BtnA で録音開始
             if ((pressed || remote_ptt_edge) && !g_wait_release_after_auto_send) {
-                if (!ensureReadyForPtt()) {
-                    break;
-                }
                 if (pressed) {
                     g_face.show(faces::F_SURPRISED);
                     delay(150);
@@ -812,21 +550,22 @@ void loop() {
                 break;
             }
 #if !defined(OFFLINE_MODE) || !OFFLINE_MODE
-            // 待機中: スケジュール発話 / 外部 push を取りにいく (wait=0 即時応答)
+            // 待機中: まず WiFi が生きていることを確認（切断時はここで回復を試みる）。
+            // 回復に失敗しても即座には何もしない（次回の 30 秒タイマーで再挑戦）。
             // OFFLINE_MODE では WiFi が未初期化のため pull を呼ぶと
             // HTTPClient が semaphore assert で crash → ループ再起動するので塞ぐ。
-            if (millis() - g_last_pull_ms >= PULL_INTERVAL_MS) {
+            if (!ensureWiFiConnected()) {
+                // まだ回復していない → 今回は何もせずまばたき等を続ける
+            } else if (millis() - g_last_pull_ms >= PULL_INTERVAL_MS) {
                 g_last_pull_ms = millis();
                 PullResponse pr = ChatClient::pull(0);
                 if (pr.ok && pr.body && pr.body_size > 0) {
                     Serial.printf("[PUSH] %s (source=%s emote=%s)\n",
                                   pr.bot_text.c_str(), pr.source.c_str(),
                                   pr.emote.length() ? pr.emote.c_str() : "neutral");
-                    g_caption_text = pr.bot_text;
                     setState(State::Speaking);     // 顔/サーボのみ。lipsync が表情を上書き
                     playAckBeep();
                     playWavWithLipsync(pr.body, pr.body_size, pr.emote.c_str());
-                    g_caption_text = "";
                     free(pr.body);
                     setState(State::Idle, faces::FACE_IDLE);
                 }
@@ -835,6 +574,8 @@ void loop() {
             // 何もない時はまばたき + マイクロ表情を刻む
             updateIdleBlink();
             updateIdleMicro();
+            // 診断用定期ステータス（WiFi/heap/uptime）。回復した直後も見えるようにする。
+            updateIdleStatus();
             break;
         }
 
@@ -862,6 +603,7 @@ void loop() {
                 g_face.show(faces::F_SOFT_SMILE);
                 delay(600);
 #else
+                ensureWiFiConnected();  // 録音中に切れていた場合の best-effort 回復
                 ChatResponse r = ChatClient::send(g_rec.data(), n);
                 if (r.ok) {
                     Serial.printf("[USER] %s\n", r.user_text.c_str());
@@ -875,11 +617,9 @@ void loop() {
                     if (r.emote.length() > 0) {
                         Serial.printf("[EMO ] %s\n", r.emote.c_str());
                     }
-                    g_caption_text = r.bot_text;
                     g_state = State::Speaking;
                     playAckBeep();
                     playWavWithLipsync(r.body, r.body_size, r.emote.c_str());
-                    g_caption_text = "";
                     free(r.body);
                 } else {
                     handleHttpError(r.http_status);
@@ -891,7 +631,6 @@ void loop() {
         }
 
         case State::Headpat: {
-#if HEAD_TOUCH_ENABLED && STACKCHAN_BSP_ENABLED
             // 「撫でる」動きで Si12T が一瞬 0 強度を返すことがあるので、
             // 500ms 以上タッチが途切れない限り Headpat を継続するヒステリシス。
             const uint32_t now = millis();
@@ -903,12 +642,13 @@ void loop() {
                 // 撫でられ終わり: LED 消灯 → やわらか笑顔 → Idle
                 const uint32_t total = now - g_headpat_start_ms;
                 Serial.printf("[HEADPAT] end (total=%ums)\n", (unsigned)total);
+                M5StackChan.showRgbColor(0, 0, 0);
                 g_face.show(faces::F_SOFT_SMILE);
                 delay(600);
                 setState(State::Idle, faces::FACE_IDLE);
                 break;
             }
-            // 撫でられ継続: 100ms 周期で表情を更新。
+            // 撫でられ継続: 100ms 周期で表情 / RGB を更新。
             static uint32_t last_update = 0;
             if (now - last_update < 100) break;
             last_update = now;
@@ -931,9 +671,27 @@ void loop() {
             }
             g_face.show(target_face);   // show() は同 ID なら redraw を省く
 
-#else
-            setState(State::Idle, faces::FACE_IDLE);
-#endif
+            // RGB: 段階で色味、脈動 (sin 2.5Hz 相当) で「呼吸」感
+            const float t_sec = held_ms / 1000.0f;
+            const float pulse = 0.55f + 0.45f * sinf(t_sec * 2.5f);  // 0.10..1.00
+            uint8_t r, g, b;
+            if (held_ms < 1500) {
+                // 薄いピンク
+                r = (uint8_t)(180 * pulse);
+                g = (uint8_t)( 60 * pulse);
+                b = (uint8_t)(100 * pulse);
+            } else if (held_ms < 3000) {
+                // 暖かいオレンジ
+                r = (uint8_t)(255 * pulse);
+                g = (uint8_t)(120 * pulse);
+                b = (uint8_t)( 40 * pulse);
+            } else {
+                // 紫マゼンタ (夢見心地)
+                r = (uint8_t)(150 * pulse);
+                g = (uint8_t)( 40 * pulse);
+                b = (uint8_t)(200 * pulse);
+            }
+            M5StackChan.showRgbColor(r, g, b);
             break;
         }
 

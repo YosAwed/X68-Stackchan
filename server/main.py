@@ -23,56 +23,64 @@ from __future__ import annotations
 import asyncio
 import hmac
 import logging
-import os
 import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
 
-from dotenv import load_dotenv
 from emote import classify as classify_emote
 from emote import classify_reaction
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, Response
 from llm import LLM
 from scheduler import Scheduler
+from settings import settings
 from stt import STT
 from tts import TTS
 from utterance_queue import Utterance, UtteranceQueue
 from wav_cache import WavCache
 
-load_dotenv()
-
 logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "info").upper(),
+    level=settings.get_log_level(),
     format="%(asctime)s %(levelname)s %(name)s | %(message)s",
 )
 log = logging.getLogger("stackchan")
 
+# 起動時に有効設定の要約を出す（診断強化）。機密値は出さない。
+log.info(
+    "config: whisper=%s device=%s llm=%s tts=%s scheduler=%s sessions=%d",
+    settings.WHISPER_MODEL,
+    settings.WHISPER_DEVICE,
+    settings.OLLAMA_MODEL,
+    settings.TTS_BACKEND,
+    "enabled" if settings.is_scheduler_enabled() else "disabled",
+    settings.MAX_SESSIONS,
+)
+
 # ----- 初期化 -----
 stt = STT(
-    model_name=os.getenv("WHISPER_MODEL", "small"),
-    device=os.getenv("WHISPER_DEVICE", "auto"),
-    language=os.getenv("WHISPER_LANGUAGE", "ja"),
+    model_name=settings.WHISPER_MODEL,
+    device=settings.WHISPER_DEVICE,
+    language=settings.WHISPER_LANGUAGE,
 )
 llm = LLM(
-    host=os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434"),
-    model=os.getenv("OLLAMA_MODEL", "qwen2.5:7b"),
-    history_turns=int(os.getenv("HISTORY_TURNS", "6")),
-    timeout_s=float(os.getenv("OLLAMA_TIMEOUT_S", "60")),
-    temperature=float(os.getenv("OLLAMA_TEMPERATURE", "0.7")),
-    num_predict=int(os.getenv("OLLAMA_NUM_PREDICT", "200")),
-    max_sessions=int(os.getenv("MAX_SESSIONS", "16")),
-    history_db=os.getenv("LLM_HISTORY_DB") or None,
+    host=settings.OLLAMA_HOST,
+    model=settings.OLLAMA_MODEL,
+    history_turns=settings.HISTORY_TURNS,
+    timeout_s=settings.OLLAMA_TIMEOUT_S,
+    temperature=settings.OLLAMA_TEMPERATURE,
+    num_predict=settings.OLLAMA_NUM_PREDICT,
+    max_sessions=settings.MAX_SESSIONS,
+    history_db=settings.LLM_HISTORY_DB,
 )
-tts = TTS()  # backend / env 解釈は tts.py + tts_<backend>.py に委譲
+tts = TTS()  # backend / env 解釈は tts.py + tts_<backend>.py に委譲 (settings を内部で参照)
 
-queue = UtteranceQueue(max_size=int(os.getenv("QUEUE_MAX_SIZE", "16")))
-ENQUEUE_TOKEN = os.getenv("ENQUEUE_TOKEN", "")
+queue = UtteranceQueue(max_size=settings.QUEUE_MAX_SIZE)
+ENQUEUE_TOKEN = settings.ENQUEUE_TOKEN
 wav_cache = WavCache(
-    dir=os.getenv("TTS_CACHE_DIR") or None,
-    version=os.getenv("TTS_CACHE_VERSION", "v1"),
+    dir=settings.TTS_CACHE_DIR,
+    version=settings.TTS_CACHE_VERSION,
 )
 _scheduler: Scheduler | None = None
 
@@ -86,7 +94,7 @@ async def _prewarm_tts():
     失敗しても起動は止めない (TTS_BACKEND の設定ミスなどはユーザーに任せる)。
     """
     try:
-        text = os.getenv("TTS_PREWARM_TEXT", "あ")
+        text = settings.TTS_PREWARM_TEXT
         log.info("TTS pre-warm: synthesizing %r ...", text)
         t0 = time.perf_counter()
         await asyncio.to_thread(tts.synthesize, text)
@@ -95,29 +103,16 @@ async def _prewarm_tts():
         log.exception("TTS pre-warm failed (continuing without warm cache)")
 
 
-async def _prewarm_stt():
-    """起動後の空き時間に Whisper をロードして初回 PTT の待ち時間を潰す。"""
-    try:
-        log.info("STT pre-warm: loading Whisper model ...")
-        t0 = time.perf_counter()
-        await asyncio.to_thread(stt.warmup)
-        log.info("STT pre-warm done in %.0f ms", (time.perf_counter() - t0) * 1000)
-    except Exception:
-        log.exception("STT pre-warm failed (continuing with lazy load)")
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _scheduler
     # 起動時に TTS を一度叩いて初回ペナルティを消す。
     # TTS_PREWARM=0 で無効化可能 (CI など TTS が動かない環境用)。
-    if os.getenv("TTS_PREWARM", "1") == "1":
+    if settings.is_tts_prewarm_enabled():
         # 別タスクで走らせて lifespan の yield を待たせない (起動を遅らせない)。
         asyncio.create_task(_prewarm_tts())
-    if os.getenv("STT_PREWARM", "1") == "1":
-        asyncio.create_task(_prewarm_stt())
-    if os.getenv("SCHEDULE_ENABLED", "0") == "1":
-        path = Path(os.getenv("SCHEDULE_FILE", "schedule.json"))
+    if settings.is_scheduler_enabled():
+        path = Path(settings.SCHEDULE_FILE)
         # silent_for_minutes 条件付きトリガが LLM の履歴 DB を参照できるように、
         # LLM が永続化を有効にしている時だけ history_store を Scheduler に渡す。
         _scheduler = Scheduler.from_file(
@@ -134,7 +129,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Stack-chan server", version="0.1.0", lifespan=lifespan)
-MAX_AUDIO_BYTES = int(os.getenv("MAX_AUDIO_BYTES", str(2 * 1024 * 1024)))
+MAX_AUDIO_BYTES = settings.MAX_AUDIO_BYTES
 
 
 def _elapsed_ms(t0: float) -> float:
@@ -151,7 +146,7 @@ def _limit_spoken_text(text: str) -> str:
     Prefer complete sentences. A raw character cut can turn otherwise valid
     Japanese into broken fragments such as "心を。".
     """
-    limit = int(os.getenv("MAX_SPEAK_CHARS", "70"))
+    limit = settings.get_max_speak_chars()
     text = " ".join(text.strip().split())
     if limit <= 0 or len(text) <= limit:
         return text
@@ -194,9 +189,9 @@ def _wav_response(
     headers = {
         "X-Stackchan-Bot-Text": quote(bot_text),
         "X-Stackchan-Timing": _timing_header(timings),
-        "X-Stackchan-TTS-Backend": os.getenv("TTS_BACKEND", "irodori"),
+        "X-Stackchan-TTS-Backend": settings.TTS_BACKEND,
         # CoreS3 側で口パク用の表情ペアを切り替えるためのヒント。
-        # emote.VALID_CATEGORIES の英小文字。
+        # neutral/joy/sad/embarrassed/confused/surprised/sleepy/confident の英小文字。
         "X-Stackchan-Emote": emote,
     }
     if user_text is not None:
@@ -355,7 +350,7 @@ async def pull(wait: float = 0.0):
         headers={
             "X-Stackchan-Bot-Text":     quote(u.bot_text),
             "X-Stackchan-Source":       u.source,
-            "X-Stackchan-TTS-Backend":  os.getenv("TTS_BACKEND", "irodori"),
+            "X-Stackchan-TTS-Backend":  settings.TTS_BACKEND,
             "X-Stackchan-Emote":        u.emote,
         },
     )
