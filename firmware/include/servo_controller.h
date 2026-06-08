@@ -11,6 +11,7 @@
 #pragma once
 #include <Arduino.h>
 #include <HardwareSerial.h>
+#include <cmath>
 
 namespace stackchan {
 
@@ -88,6 +89,12 @@ public:
         in_idle_         = false;
     }
 
+    // シェイク反応: 速い左右振動 + うつむき (~1.4 秒) で「目が回る」動き。
+    void startDizzyWobble() {
+        dizzy_start_ms_ = millis();
+        in_idle_        = false;
+    }
+
     // 発話 RMS (0..1) に連動した微小な頷き
     void setSpeakLipWeight(float w) {
         if (!in_idle_) target_pitch_ = speak_base_ + w * 0.15f;
@@ -119,6 +126,20 @@ public:
             }
         }
 
+        // シェイク反応: 速い左右振動 + うつむき (くらくら)。終わったら Idle へ。
+        if (dizzy_start_ms_ > 0) {
+            const uint32_t elapsed = now - dizzy_start_ms_;
+            if (elapsed < DIZZY_DURATION_MS) {
+                const float t = elapsed / 1000.0f;
+                target_yaw_   = sinf(t * 12.0f) * 0.5f;            // 速い首振り
+                target_pitch_ = -0.25f + sinf(t * 6.0f) * 0.10f;   // うつむき気味に揺れる
+                lerp_speed_   = LERP_FAST;
+            } else {
+                dizzy_start_ms_ = 0;
+                goIdle();
+            }
+        }
+
         // Idle 時: ゆっくりランダムにさ迷う
         if (in_idle_ && now - last_idle_ms_ > idle_interval_ms_) {
             last_idle_ms_     = now;
@@ -135,9 +156,17 @@ public:
         if (now - last_send_ms_ < SEND_MS) return;
         last_send_ms_ = now;
 
+        // Idle 中はピッチに微小なサイン揺れを足して「息遣い」を演出する。
+        // (target_* には触れず描画位置だけずらすので Idle のランダム彷徨と両立)
+        float pitch_render = current_pitch_;
+        if (in_idle_) {
+            const float ph = (now / 1000.0f) * BREATH_HZ * 6.28318530718f;
+            pitch_render += sinf(ph) * BREATH_AMP;
+        }
+
         const int yp = constrain(YAW_CTR   + (int)(current_yaw_   * YAW_HALF),
                                  YAW_CTR   - YAW_HALF, YAW_CTR   + YAW_HALF);
-        const int pp = constrain(PITCH_CTR + (int)(current_pitch_  * PITCH_HALF),
+        const int pp = constrain(PITCH_CTR + (int)(pitch_render   * PITCH_HALF),
                                  PITCH_CTR - PITCH_HALF, PITCH_CTR + PITCH_HALF);
         writePos(ID_YAW,   yp, MOVE_MS);
         writePos(ID_PITCH, pp, MOVE_MS);
@@ -159,6 +188,12 @@ private:
     uint32_t idle_interval_ms_ = 3000;
     uint32_t waggle_start_ms_  = 0;
     static constexpr uint32_t WAGGLE_DURATION_MS = 1050;  // 3 phases × 350 ms
+    uint32_t dizzy_start_ms_   = 0;
+    static constexpr uint32_t DIZZY_DURATION_MS  = 1400;
+
+    // Idle 中の「息遣い」微小揺れ
+    static constexpr float BREATH_HZ  = 0.25f;  // 1 呼吸 / 4 秒
+    static constexpr float BREATH_AMP = 0.05f;  // ごく微小なチルト振幅
 
     // --------------------------------------------------------
     //  SCS プロトコル: Goal Position (0x2A) + Time + Speed 書き込み

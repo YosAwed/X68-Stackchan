@@ -55,6 +55,9 @@ static uint32_t g_wifi_backoff_ms      = 2000;   // 初期 2 秒、倍々で 30 
 // 診断ステータス最終出力時刻
 static uint32_t g_last_status_ms = 0;
 
+// 診断用定期ステータス出力間隔（シリアルでヒープ/WiFi/uptimeを確認しやすくする）
+constexpr uint32_t STATUS_INTERVAL_MS = 15000;
+
 // ---- Idle 中のまばたき ----
 // 4〜8 秒のランダム間隔で目を閉じた表情 (FACE_BLINK) を 150 ms 表示する。
 // Speaking / Listening / Thinking 中は動かない (state が Idle の時だけ走る)。
@@ -147,11 +150,10 @@ static inline void updateIdleStatus() {
 // 定期発話 / 外部 push をサーバから取りに行く間隔 (Idle 中のみ)
 constexpr uint32_t PULL_INTERVAL_MS = 30000;
 
-// 診断用定期ステータス出力間隔（シリアルでヒープ/WiFi/uptimeを確認しやすくする）
-constexpr uint32_t STATUS_INTERVAL_MS = 15000;
-
-// 一時リアクション (なでなで / シェイク) の終了時刻
+// 一時リアクション (シェイク / 持ち上げ) の表示保持。終了時刻まで Idle の
+// まばたき・マイクロ表情・pull を抑止し、表示が即上書きされないようにする。
 static uint32_t g_reaction_end_ms = 0;
+static bool     g_reaction_active = false;
 
 #if SERVO_ENABLED
 static ServoController g_servo;
@@ -184,6 +186,8 @@ static void setState(State s, int face_id = -1) {
         g_blink_started_ms = 0;
         g_micro_started_ms = 0;
     }
+    // 状態遷移時は一時リアクションの保持も解除しておく (取り残し防止)。
+    g_reaction_active = false;
 #if SERVO_ENABLED
     switch (s) {
         case State::Idle:      g_servo.goIdle();      break;
@@ -501,6 +505,51 @@ void loop() {
             if (!pressed && !g_remote.btnA()) {
                 g_wait_release_after_auto_send = false;
             }
+
+            // 一時リアクション表示中は他のアイドル挙動を抑止して表示を保持。
+            // 終了したら Idle 表情 / RGB / まばたきタイマを元に戻す。
+            if (g_reaction_active) {
+                if (millis() >= g_reaction_end_ms) {
+                    g_reaction_active = false;
+                    g_face.show(faces::FACE_IDLE);
+#if RGB_ENABLED
+                    g_rgb.setScene(RgbScene::Idle);
+#endif
+                    scheduleNextBlink();
+                    scheduleNextMicro();
+                }
+                break;
+            }
+
+            // IMU: 激しいシェイク → 目回し、持ち上げ/小突き → 驚き。
+            {
+                const auto imu_ev = g_imu.update();
+                if (imu_ev == ImuHandler::Event::Shake) {
+                    Serial.println("[IMU ] shake -> dizzy");
+                    g_face.show(faces::FACE_SHAKEN);
+#if RGB_ENABLED
+                    g_rgb.setScene(RgbScene::Shaken);
+#endif
+#if SERVO_ENABLED
+                    g_servo.startDizzyWobble();
+#endif
+                    playDizzyChime();
+                    g_reaction_active = true;
+                    g_reaction_end_ms = millis() + 1500;
+                    break;
+                } else if (imu_ev == ImuHandler::Event::Lift) {
+                    Serial.println("[IMU ] lift -> surprised");
+                    g_face.show(faces::F_SPARKLE_EYES);
+#if RGB_ENABLED
+                    g_rgb.setScene(RgbScene::Swipe);
+#endif
+                    playLiftBeep();
+                    g_reaction_active = true;
+                    g_reaction_end_ms = millis() + 900;
+                    break;
+                }
+            }
+
             // 頭頂タッチ: スワイプ優先、ホールドでなでなで (headpat)
             // wasPressed() は即発火するためスワイプ判定と競合する。
             // g_touch.update() に一本化して Swipe/Pet を区別する。
