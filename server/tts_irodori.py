@@ -42,6 +42,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torchaudio.functional as AF
+from settings import settings
 
 log = logging.getLogger(__name__)
 
@@ -54,10 +55,10 @@ _TMPFS_DIR: str | None = "/dev/shm" if os.path.isdir("/dev/shm") else None
 
 class TTS:
     def __init__(self):
-        ref_wav = os.getenv("IRODORI_REF_WAV") or None
-        device = os.getenv("IRODORI_DEVICE", "cuda")
-        force_fp16 = os.getenv("IRODORI_FORCE_FP16", "1") == "1"
-        checkpoint = os.getenv("IRODORI_CHECKPOINT") or None
+        ref_wav = settings.IRODORI_REF_WAV
+        device = settings.IRODORI_DEVICE
+        force_fp16 = bool(settings.IRODORI_FORCE_FP16)
+        checkpoint = settings.IRODORI_CHECKPOINT
 
         import irodori_tts_lite
 

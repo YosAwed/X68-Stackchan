@@ -48,6 +48,13 @@ static uint32_t       g_headpat_last_press_ms = 0;  // 直近で isPressed=true 
 static uint32_t       g_last_mic_log_ms = 0;
 static uint32_t       g_last_pull_ms    = 0;
 
+// WiFi ランタイム回復用バックオフ状態 (ensureWiFiConnected で使用)
+static uint32_t g_next_wifi_attempt_ms = 0;
+static uint32_t g_wifi_backoff_ms      = 2000;   // 初期 2 秒、倍々で 30 秒上限
+
+// 診断ステータス最終出力時刻
+static uint32_t g_last_status_ms = 0;
+
 // ---- Idle 中のまばたき ----
 // 4〜8 秒のランダム間隔で目を閉じた表情 (FACE_BLINK) を 150 ms 表示する。
 // Speaking / Listening / Thinking 中は動かない (state が Idle の時だけ走る)。
@@ -118,8 +125,30 @@ static inline void updateIdleMicro() {
     }
 }
 
+// ---- Idle 定期診断ステータス（シリアルログ強化） ----
+// 15 秒おきに WiFi 状態・ヒープ使用量・稼働時間を出す。
+// これにより WiFi 回復の成否やメモリ圧迫をデバッグしやすくなる。
+static inline void updateIdleStatus() {
+    const uint32_t now = millis();
+    if (now - g_last_status_ms < STATUS_INTERVAL_MS) return;
+    g_last_status_ms = now;
+
+    const bool wifi_ok = (WiFi.status() == WL_CONNECTED);
+    const uint32_t free_heap  = ESP.getFreeHeap();
+    const uint32_t free_psram = ESP.getFreePsram();
+
+    Serial.printf("[STATUS] wifi=%d heap=%u psram=%u uptime=%lus\n",
+                  wifi_ok ? 1 : 0,
+                  (unsigned)free_heap,
+                  (unsigned)free_psram,
+                  (unsigned long)(now / 1000));
+}
+
 // 定期発話 / 外部 push をサーバから取りに行く間隔 (Idle 中のみ)
 constexpr uint32_t PULL_INTERVAL_MS = 30000;
+
+// 診断用定期ステータス出力間隔（シリアルでヒープ/WiFi/uptimeを確認しやすくする）
+constexpr uint32_t STATUS_INTERVAL_MS = 15000;
 
 // 一時リアクション (なでなで / シェイク) の終了時刻
 static uint32_t g_reaction_end_ms = 0;
@@ -217,16 +246,42 @@ static void showReadyError(const ReadyResponse& ready) {
     playServerErrorBeep();
 }
 
-static bool connectWiFi() {
+static bool connectWiFi(uint32_t timeout_ms = 15000) {
     WiFi.mode(WIFI_STA);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
     const uint32_t t0 = millis();
     while (WiFi.status() != WL_CONNECTED) {
         delay(200);
-        if (millis() - t0 > 15000) return false;
+        if (millis() - t0 > timeout_ms) return false;
     }
     Serial.printf("WiFi connected: %s\n", WiFi.localIP().toString().c_str());
     return true;
+}
+
+// ランタイムで WiFi が落ちた後の回復を試みる（Idle 中のみ呼ぶ）。
+// 初期起動時は connectWiFi() の厳密な 15 秒タイムアウトのまま fail-fast する。
+// ここでは短めのタイムアウト + 指数バックオフで loop をブロックしすぎないようにする。
+static bool ensureWiFiConnected() {
+    if (WiFi.status() == WL_CONNECTED) return true;
+
+    const uint32_t now = millis();
+    if (now < g_next_wifi_attempt_ms) return false;
+
+    // ランタイム回復は短め (4 秒) に抑える。長時間ブロックするとまばたき等に影響。
+    const bool ok = connectWiFi(4000);
+    if (ok) {
+        Serial.println("[WiFi] reconnected");
+        // 成功したらバックオフをリセット + 次フレームで即ステータスを出して確認しやすくする
+        g_wifi_backoff_ms = 2000;
+        g_next_wifi_attempt_ms = 0;
+        g_last_status_ms = millis() - STATUS_INTERVAL_MS - 1;
+        return true;
+    }
+
+    // 失敗 → 次回までの間隔を伸ばす (2s → 4s → 8s ... cap 30s)
+    if (g_wifi_backoff_ms < 30000) g_wifi_backoff_ms *= 2;
+    g_next_wifi_attempt_ms = now + g_wifi_backoff_ms;
+    return false;
 }
 
 // 応答 WAV を再生しながら、PCM の RMS で口パク (口閉/口開/大開 3 段階)
@@ -411,6 +466,10 @@ void setup() {
     randomSeed(seed);
     srand(seed);   // upstream の scheduleNextBlink が rand() を使う
     setState(State::Idle, faces::FACE_IDLE);
+
+    // 起動直後の初回ステータス出力（診断強化）。WiFi/ヒープが一目で分かる。
+    g_last_status_ms = millis() - STATUS_INTERVAL_MS;
+    updateIdleStatus();
 }
 
 void loop() {
@@ -491,10 +550,13 @@ void loop() {
                 break;
             }
 #if !defined(OFFLINE_MODE) || !OFFLINE_MODE
-            // 待機中: スケジュール発話 / 外部 push を取りにいく (wait=0 即時応答)
+            // 待機中: まず WiFi が生きていることを確認（切断時はここで回復を試みる）。
+            // 回復に失敗しても即座には何もしない（次回の 30 秒タイマーで再挑戦）。
             // OFFLINE_MODE では WiFi が未初期化のため pull を呼ぶと
             // HTTPClient が semaphore assert で crash → ループ再起動するので塞ぐ。
-            if (millis() - g_last_pull_ms >= PULL_INTERVAL_MS) {
+            if (!ensureWiFiConnected()) {
+                // まだ回復していない → 今回は何もせずまばたき等を続ける
+            } else if (millis() - g_last_pull_ms >= PULL_INTERVAL_MS) {
                 g_last_pull_ms = millis();
                 PullResponse pr = ChatClient::pull(0);
                 if (pr.ok && pr.body && pr.body_size > 0) {
@@ -512,6 +574,8 @@ void loop() {
             // 何もない時はまばたき + マイクロ表情を刻む
             updateIdleBlink();
             updateIdleMicro();
+            // 診断用定期ステータス（WiFi/heap/uptime）。回復した直後も見えるようにする。
+            updateIdleStatus();
             break;
         }
 
@@ -539,6 +603,7 @@ void loop() {
                 g_face.show(faces::F_SOFT_SMILE);
                 delay(600);
 #else
+                ensureWiFiConnected();  // 録音中に切れていた場合の best-effort 回復
                 ChatResponse r = ChatClient::send(g_rec.data(), n);
                 if (r.ok) {
                     Serial.printf("[USER] %s\n", r.user_text.c_str());

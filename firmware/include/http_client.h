@@ -41,6 +41,14 @@ struct PullResponse {
 
 class ChatClient {
 public:
+    // 1 回リトライする簡易 connect（瞬断に少し強くなる）。
+    // ランタイムは ensureWiFiConnected() が先に呼ばれる前提。
+    static bool connectWithRetry(WiFiClient& c, const char* host, uint16_t port, uint32_t extra_delay_ms = 150) {
+        if (c.connect(host, port)) return true;
+        delay(extra_delay_ms);
+        return c.connect(host, port);
+    }
+
     static ReadyResponse ready() {
         ReadyResponse r;
 
@@ -85,7 +93,7 @@ public:
         ChatResponse r;
 
         WiFiClient client;
-        if (!client.connect(SERVER_HOST, SERVER_PORT)) {
+        if (!connectWithRetry(client, SERVER_HOST, SERVER_PORT)) {
             log_e("connect failed: %s:%u", SERVER_HOST, (unsigned)SERVER_PORT);
             return r;
         }
@@ -200,7 +208,7 @@ public:
         PullResponse r;
 
         WiFiClient client;
-        if (!client.connect(SERVER_HOST, SERVER_PORT)) {
+        if (!connectWithRetry(client, SERVER_HOST, SERVER_PORT)) {
             return r;
         }
         client.setTimeout((wait_seconds + 5) * 1000);

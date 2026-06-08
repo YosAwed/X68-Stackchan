@@ -15,8 +15,9 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
+
+from settings import settings
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +42,13 @@ DEFAULT_SYSTEM_PROMPT = """\
 
 def load_persona(env_var: str = "PERSONA_FILE") -> str:
     """env_var に書かれたパスからプロンプトを読む。未指定 / 失敗時は default。"""
-    path_str = os.getenv(env_var)
+    # Prefer the centralized setting; fall back to the passed env_var name for
+    # backward compatibility with any direct calls.
+    path_str = settings.PERSONA_FILE
+    if not path_str and env_var:
+        # legacy direct getenv path (rarely used)
+        import os
+        path_str = os.getenv(env_var)
     if not path_str:
         return DEFAULT_SYSTEM_PROMPT
     path = Path(path_str)
