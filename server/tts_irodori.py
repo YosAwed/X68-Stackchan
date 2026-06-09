@@ -55,10 +55,11 @@ _TMPFS_DIR: str | None = "/dev/shm" if os.path.isdir("/dev/shm") else None
 
 class TTS:
     def __init__(self):
-        ref_wav = settings.IRODORI_REF_WAV
+        ref_wav = settings.IRODORI_REF_WAV or None
         device = settings.IRODORI_DEVICE
         force_fp16 = bool(settings.IRODORI_FORCE_FP16)
         checkpoint = settings.IRODORI_CHECKPOINT
+        seed = settings.IRODORI_SEED
 
         import irodori_tts_lite
 
@@ -70,6 +71,7 @@ class TTS:
 
         self._checkpoint = irodori_tts_lite.resolve_checkpoint(checkpoint)
         self._ref_wav = ref_wav
+        self._seed = seed
         self._device = device
         self._force_fp16 = force_fp16
         self._lock = threading.Lock()
@@ -79,8 +81,9 @@ class TTS:
         self._last_convert_ms = None
         self._last_total_ms = None
         log.info(
-            "Irodori-TTS-Lite ready (device=%s, fp16=%s, ckpt=%s, ref=%s)",
+            "Irodori-TTS-Lite ready (device=%s, fp16=%s, ckpt=%s, ref=%s, seed=%s)",
             device, force_fp16, self._checkpoint, ref_wav or "<none/--no-ref>",
+            seed if seed is not None else "<random>",
         )
 
     def status(self) -> dict:
@@ -91,6 +94,7 @@ class TTS:
             "force_fp16": self._force_fp16,
             "checkpoint": str(self._checkpoint),
             "ref_wav": self._ref_wav,
+            "seed": self._seed,
             "cuda_available": bool(torch.cuda.is_available()),
             "cuda_device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
             "calls": self._calls,
@@ -128,6 +132,8 @@ class TTS:
                     argv.append("--no-ref")
                 else:
                     argv.extend(["--ref-wav", self._ref_wav])
+                if self._seed is not None:
+                    argv.extend(["--seed", str(self._seed)])
 
                 saved = sys.argv
                 sys.argv = argv

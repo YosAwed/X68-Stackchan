@@ -12,7 +12,14 @@ log = logging.getLogger(__name__)
 
 
 class STT:
-    def __init__(self, model_name: str, device: str = "auto", language: str = "ja"):
+    def __init__(
+        self,
+        model_name: str,
+        device: str = "auto",
+        language: str = "ja",
+        vad_filter: bool = False,
+        beam_size: int = 1,
+    ):
         # CUDA なら float16 が速い。CPU フォールバックは int8。
         # device="auto" は faster-whisper 側で CUDA を優先検出するので float16 を選ぶ。
         compute_type = "int8" if device == "cpu" else "float16"
@@ -20,6 +27,8 @@ class STT:
         self.device = device
         self.compute_type = compute_type
         self.language = language
+        self.vad_filter = vad_filter
+        self.beam_size = beam_size
         self.model = None
         self._lock = threading.Lock()
 
@@ -44,6 +53,8 @@ class STT:
             "device": self.device,
             "compute_type": self.compute_type,
             "language": self.language,
+            "vad_filter": self.vad_filter,
+            "beam_size": self.beam_size,
             "loaded": self.model is not None,
         }
 
@@ -58,8 +69,8 @@ class STT:
         segments, info = self._model().transcribe(
             buf,
             language=self.language,
-            beam_size=1,            # ロボット会話なので速度優先
-            vad_filter=True,        # 無音をカット
+            beam_size=self.beam_size,
+            vad_filter=self.vad_filter,
             condition_on_previous_text=False,
         )
         text = "".join(seg.text for seg in segments).strip()

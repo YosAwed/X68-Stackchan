@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     WHISPER_MODEL: str = "small"
     WHISPER_DEVICE: str = "auto"          # cuda / cpu / auto
     WHISPER_LANGUAGE: str = "ja"
+    WHISPER_VAD_FILTER: int = Field(default=0, ge=0, le=1)
+    WHISPER_BEAM_SIZE: int = Field(default=1, gt=0)
+    WHISPER_PREWARM: int = Field(default=1, ge=0, le=1)
 
     # ---- Ollama (LLM) ----
     OLLAMA_HOST: str = "http://127.0.0.1:11434"
@@ -51,6 +54,7 @@ class Settings(BaseSettings):
     IRODORI_REF_WAV: str | None = None
     IRODORI_FORCE_FP16: int = Field(default=1, ge=0, le=1)
     IRODORI_CHECKPOINT: str | None = None
+    IRODORI_SEED: int | None = 68000
 
     # ---- VOICEVOX (when TTS_BACKEND=voicevox) ----
     VOICEVOX_HOST: str = "http://127.0.0.1:50021"
@@ -90,6 +94,15 @@ class Settings(BaseSettings):
     def _upper_log_level(cls, v: str) -> str:
         return v.upper()
 
+    @field_validator("IRODORI_SEED", mode="before")
+    @classmethod
+    def _empty_seed_means_random(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str) and v.strip().lower() in ("", "none", "null", "random"):
+            return None
+        return v
+
     # ---- Convenience helpers (used by main.py and scheduler init) ----
     # NOTE: These helpers re-instantiate Settings() so that pytest monkeypatch.setenv
     # calls in tests are reflected even when the module-level singleton was created
@@ -99,6 +112,9 @@ class Settings(BaseSettings):
 
     def is_tts_prewarm_enabled(self) -> bool:
         return bool(Settings().TTS_PREWARM)
+
+    def is_whisper_prewarm_enabled(self) -> bool:
+        return bool(Settings().WHISPER_PREWARM)
 
     def is_time_flavor_enabled(self) -> bool:
         return bool(Settings().LLM_TIME_FLAVOR)

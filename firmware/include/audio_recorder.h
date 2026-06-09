@@ -30,6 +30,9 @@ public:
 
     // 録音開始 (バッファ先頭の 44byte 分はヘッダ用に予約)
     void start() {
+        M5.Speaker.stop();
+        while (M5.Mic.isRecording()) { delay(1); }
+        M5.Mic.end();
         write_pos_ = 44;
         recording_ = true;
         overflow_stopped_ = false;

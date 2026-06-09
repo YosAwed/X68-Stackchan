@@ -49,9 +49,10 @@ log = logging.getLogger("stackchan")
 
 # 起動時に有効設定の要約を出す（診断強化）。機密値は出さない。
 log.info(
-    "config: whisper=%s device=%s llm=%s tts=%s scheduler=%s sessions=%d",
+    "config: whisper=%s device=%s vad=%s llm=%s tts=%s scheduler=%s sessions=%d",
     settings.WHISPER_MODEL,
     settings.WHISPER_DEVICE,
+    "on" if settings.WHISPER_VAD_FILTER else "off",
     settings.OLLAMA_MODEL,
     settings.TTS_BACKEND,
     "enabled" if settings.is_scheduler_enabled() else "disabled",
@@ -63,6 +64,8 @@ stt = STT(
     model_name=settings.WHISPER_MODEL,
     device=settings.WHISPER_DEVICE,
     language=settings.WHISPER_LANGUAGE,
+    vad_filter=bool(settings.WHISPER_VAD_FILTER),
+    beam_size=settings.WHISPER_BEAM_SIZE,
 )
 llm = LLM(
     host=settings.OLLAMA_HOST,
@@ -78,9 +81,29 @@ tts = TTS()  # backend / env 解釈は tts.py + tts_<backend>.py に委譲 (sett
 
 queue = UtteranceQueue(max_size=settings.QUEUE_MAX_SIZE)
 ENQUEUE_TOKEN = settings.ENQUEUE_TOKEN
+
+
+def _tts_cache_version() -> str:
+    """Fold voice-affecting settings into the cache namespace.
+
+    Without this, changing Irodori seed/reference can still return old WAVs
+    generated with a previous voice from the disk cache.
+    """
+    parts = [settings.TTS_CACHE_VERSION, settings.TTS_BACKEND]
+    if settings.TTS_BACKEND == "irodori":
+        parts.extend([
+            f"seed={settings.IRODORI_SEED if settings.IRODORI_SEED is not None else 'random'}",
+            f"ref={settings.IRODORI_REF_WAV or 'no-ref'}",
+            f"ckpt={settings.IRODORI_CHECKPOINT or 'auto'}",
+        ])
+    elif settings.TTS_BACKEND == "voicevox":
+        parts.append(f"speaker={settings.VOICEVOX_SPEAKER}")
+    return "|".join(str(p) for p in parts)
+
+
 wav_cache = WavCache(
     dir=settings.TTS_CACHE_DIR,
-    version=settings.TTS_CACHE_VERSION,
+    version=_tts_cache_version(),
 )
 _scheduler: Scheduler | None = None
 
@@ -103,9 +126,22 @@ async def _prewarm_tts():
         log.exception("TTS pre-warm failed (continuing without warm cache)")
 
 
+async def _prewarm_stt():
+    """Whisper モデルを起動直後にロードして、初回 PTT の待ちを減らす。"""
+    try:
+        log.info("STT pre-warm: loading whisper model ...")
+        t0 = time.perf_counter()
+        await asyncio.to_thread(stt.warmup)
+        log.info("STT pre-warm done in %.0f ms", (time.perf_counter() - t0) * 1000)
+    except Exception:
+        log.exception("STT pre-warm failed (continuing with lazy load)")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _scheduler
+    if settings.is_whisper_prewarm_enabled():
+        asyncio.create_task(_prewarm_stt())
     # 起動時に TTS を一度叩いて初回ペナルティを消す。
     # TTS_PREWARM=0 で無効化可能 (CI など TTS が動かない環境用)。
     if settings.is_tts_prewarm_enabled():

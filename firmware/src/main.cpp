@@ -753,6 +753,7 @@ void loop() {
                 const size_t n = g_rec.stop();
                 g_listening_start_ms = 0;
                 setState(State::Thinking, faces::FACE_THINKING);
+                const uint32_t t_send_start = millis();
 #if defined(OFFLINE_MODE) && OFFLINE_MODE
                 // OFFLINE: HTTP 呼び出しせず、考えてるフリ → ack → 笑顔 → Idle
                 Serial.printf("[OFFLINE] recorded %u bytes (would POST /chat)\n",
@@ -764,6 +765,10 @@ void loop() {
 #else
                 ensureWiFiConnected();  // 録音中に切れていた場合の best-effort 回復
                 ChatResponse r = ChatClient::send(g_rec.data(), n);
+                Serial.printf("[TIME] device_http;dur=%u wav_in=%u wav_out=%u\n",
+                              (unsigned)(millis() - t_send_start),
+                              (unsigned)n,
+                              (unsigned)r.body_size);
                 if (r.ok) {
                     Serial.printf("[USER] %s\n", r.user_text.c_str());
                     Serial.printf("[BOT ] %s\n", r.bot_text.c_str());
@@ -777,7 +782,6 @@ void loop() {
                         Serial.printf("[EMO ] %s\n", r.emote.c_str());
                     }
                     g_state = State::Speaking;
-                    playAckBeep();
                     playWavWithLipsync(r.body, r.body_size, r.emote.c_str(), r.bot_text);
                     free(r.body);
                 } else {
