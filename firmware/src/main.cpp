@@ -87,6 +87,8 @@ static constexpr uint32_t MICRO_MAX_MS  = 15000;
 static uint32_t g_next_micro_ms    = 0;
 static uint32_t g_micro_started_ms = 0;
 
+static inline void flashIdleMicroRgb();
+
 static inline void scheduleNextMicro() {
     const uint32_t span = MICRO_MAX_MS - MICRO_MIN_MS;
     g_next_micro_ms    = millis() + MICRO_MIN_MS + (uint32_t)(rand() % span);
@@ -130,6 +132,7 @@ static inline void updateIdleMicro() {
         constexpr int kN = sizeof(kMicroFaces) / sizeof(kMicroFaces[0]);
         g_face.show(kMicroFaces[rand() % kN]);
         g_micro_started_ms = now;
+        flashIdleMicroRgb();
     }
 }
 
@@ -169,6 +172,12 @@ static RgbController   g_rgb;
 static TouchHandler    g_touch;
 static ImuHandler      g_imu;
 static RemoteHandler   g_remote;
+
+static inline void flashIdleMicroRgb() {
+#if RGB_ENABLED
+    g_rgb.flashMicroExpression();
+#endif
+}
 
 static void clearSideStatus() {
     const int dx = (M5.Display.width() - PekekoFace::kSize) / 2;
@@ -438,6 +447,10 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size,
     int face_wide  = faces::FACE_SPEAK_WIDE;
     faces::resolve_speak_triple(emote, face_close, face_open, face_wide);
 
+#if RGB_ENABLED
+    g_rgb.setSpeakEmote(emote);
+#endif
+
     while (M5.Speaker.isPlaying()) {
         const uint32_t now = millis();
         if (now - last_update >= 40) {           // 25 fps 相当で更新
@@ -632,7 +645,9 @@ void loop() {
                     g_headpat_start_ms = now;
                     g_headpat_last_press_ms = now;
                     setState(State::Headpat, faces::F_BASHFUL);
-                    M5StackChan.showRgbColor(255, 80, 150);
+#if RGB_ENABLED
+                    g_rgb.setScene(RgbScene::Praise);
+#endif
                     Serial.println("[HEADPAT] start");
                     break;
                 }
@@ -802,10 +817,12 @@ void loop() {
             }
             constexpr uint32_t HEADPAT_RELEASE_MS = 500;
             if (now - g_headpat_last_press_ms > HEADPAT_RELEASE_MS) {
-                // 撫でられ終わり: LED 消灯 → やわらか笑顔 → Idle
+                // 撫でられ終わり: LED フェードアウト → やわらか笑顔 → Idle
                 const uint32_t total = now - g_headpat_start_ms;
                 Serial.printf("[HEADPAT] end (total=%ums)\n", (unsigned)total);
-                M5StackChan.showRgbColor(0, 0, 0);
+#if RGB_ENABLED
+                g_rgb.setScene(RgbScene::PraiseEnd);
+#endif
                 g_face.show(faces::F_SOFT_SMILE);
                 delay(600);
                 setState(State::Idle, faces::FACE_IDLE);
@@ -835,7 +852,9 @@ void loop() {
             g_face.show(target_face);   // show() は同 ID なら redraw を省く
 
             if (held_ms >= 3000) {
-                M5StackChan.showRgbColor(0, 0, 0);
+#if RGB_ENABLED
+                g_rgb.setScene(RgbScene::Sleep);
+#endif
                 g_sleep_enter_ms = millis();
                 g_sleep_head_released = false;
                 g_wait_release_after_auto_send = true;
@@ -845,26 +864,30 @@ void loop() {
             }
 
             // RGB: 段階で色味、脈動 (sin 2.5Hz 相当) で「呼吸」感
-            const float t_sec = held_ms / 1000.0f;
-            const float pulse = 0.55f + 0.45f * sinf(t_sec * 2.5f);  // 0.10..1.00
-            uint8_t r, g, b;
-            if (held_ms < 1500) {
-                // 薄いピンク
-                r = (uint8_t)(180 * pulse);
-                g = (uint8_t)( 60 * pulse);
-                b = (uint8_t)(100 * pulse);
-            } else if (held_ms < 3000) {
-                // 暖かいオレンジ
-                r = (uint8_t)(255 * pulse);
-                g = (uint8_t)(120 * pulse);
-                b = (uint8_t)( 40 * pulse);
-            } else {
-                // 紫マゼンタ (夢見心地)
-                r = (uint8_t)(150 * pulse);
-                g = (uint8_t)( 40 * pulse);
-                b = (uint8_t)(200 * pulse);
+            // rgb_controller の Praise シーンで制御するが、Headpat 中は
+            // 直接色を指定して段階遷移を再現する。
+            {
+                const float t_sec = held_ms / 1000.0f;
+                const float pulse = 0.55f + 0.45f * sinf(t_sec * 2.5f);  // 0.10..1.00
+                uint8_t r, g, b;
+                if (held_ms < 1500) {
+                    // 薄いピンク
+                    r = (uint8_t)(180 * pulse);
+                    g = (uint8_t)( 60 * pulse);
+                    b = (uint8_t)(100 * pulse);
+                } else if (held_ms < 3000) {
+                    // 暖かいオレンジ
+                    r = (uint8_t)(255 * pulse);
+                    g = (uint8_t)(120 * pulse);
+                    b = (uint8_t)( 40 * pulse);
+                } else {
+                    // 紫マゼンタ (夢見心地)
+                    r = (uint8_t)(150 * pulse);
+                    g = (uint8_t)( 40 * pulse);
+                    b = (uint8_t)(200 * pulse);
+                }
+                M5StackChan.showRgbColor(r, g, b);
             }
-            M5StackChan.showRgbColor(r, g, b);
             break;
         }
 
@@ -884,6 +907,9 @@ void loop() {
             if ((pressed || remote_ptt_edge || head_wake) && !g_wait_release_after_auto_send) {
                 Serial.println("[SLEEP] wake");
                 g_wait_release_after_auto_send = true;
+#if RGB_ENABLED
+                g_rgb.setScene(RgbScene::Idle);
+#endif
                 setState(State::Idle, faces::FACE_IDLE);
             }
             break;
@@ -899,7 +925,7 @@ void loop() {
     }
 #endif
 #if RGB_ENABLED
-    if (g_state != State::Sleep && g_state != State::Headpat) {
+    if (g_state != State::Headpat) {
         g_rgb.update();
     }
 #endif
