@@ -212,6 +212,20 @@ def _synthesize_speech(text: str, *, use_cache: bool = True) -> bytes:
     return wav
 
 
+def _synthesize_speech_with_cache_info(
+    text: str, *, use_cache: bool = True
+) -> tuple[bytes, bool]:
+    if use_cache:
+        cached = wav_cache.get(text)
+        if cached is not None:
+            log.info("TTS cache hit: %r", text)
+            return cached, True
+    wav = tts.synthesize(text)
+    if use_cache:
+        wav_cache.put(text, wav)
+    return wav, False
+
+
 def _wav_response(
     wav: bytes,
     *,
@@ -303,8 +317,10 @@ async def chat(
 
     try:
         t0 = time.perf_counter()
-        wav_out = _synthesize_speech(bot_text)
+        wav_out, cache_hit = _synthesize_speech_with_cache_info(bot_text)
         timings["tts"] = _elapsed_ms(t0)
+        if cache_hit:
+            timings["tts_cache"] = 1.0
     except Exception as e:
         log.exception("TTS failed")
         return JSONResponse(status_code=500, content={"error": f"tts: {e}"})
@@ -327,8 +343,10 @@ def speak(text: str = Form(...)):
         raise HTTPException(status_code=400, detail="text is empty")
     try:
         t0 = time.perf_counter()
-        wav_out = _synthesize_speech(text)
+        wav_out, cache_hit = _synthesize_speech_with_cache_info(text)
         timings["tts"] = _elapsed_ms(t0)
+        if cache_hit:
+            timings["tts_cache"] = 1.0
     except Exception as e:
         log.exception("TTS failed")
         return JSONResponse(status_code=500, content={"error": f"tts: {e}"})
@@ -352,8 +370,10 @@ def chat_text(text: str = Form(...), sid: str = Form("default")):
         return JSONResponse(status_code=500, content={"error": f"llm: {e}"})
     try:
         t0 = time.perf_counter()
-        wav_out = _synthesize_speech(bot_text)
+        wav_out, cache_hit = _synthesize_speech_with_cache_info(bot_text)
         timings["tts"] = _elapsed_ms(t0)
+        if cache_hit:
+            timings["tts_cache"] = 1.0
     except Exception as e:
         log.exception("TTS failed")
         return JSONResponse(status_code=500, content={"error": f"tts: {e}"})

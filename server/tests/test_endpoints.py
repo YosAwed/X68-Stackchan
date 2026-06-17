@@ -236,6 +236,23 @@ def test_chat_text_uses_wav_cache_when_enabled(tmp_path, app_with_fakes):
         app_with_fakes.wav_cache = original_cache
 
 
+def test_speak_reports_tts_cache_timing_on_cache_hit(tmp_path, app_with_fakes):
+    from fastapi.testclient import TestClient
+    from wav_cache import WavCache
+
+    original_cache = app_with_fakes.wav_cache
+    app_with_fakes.wav_cache = WavCache(dir=tmp_path)
+
+    try:
+        with TestClient(app_with_fakes.app) as c:
+            first = c.post("/speak", data={"text": "同じセリフ"})
+            second = c.post("/speak", data={"text": "同じセリフ"})
+        assert first.status_code == 200 and second.status_code == 200
+        assert "tts_cache;dur=1.0" in second.headers["x-stackchan-timing"]
+    finally:
+        app_with_fakes.wav_cache = original_cache
+
+
 def test_enqueue_with_via_llm_routes_through_llm(client, app_with_fakes):
     while app_with_fakes.queue.size() > 0:
         app_with_fakes.queue._q.get_nowait()
