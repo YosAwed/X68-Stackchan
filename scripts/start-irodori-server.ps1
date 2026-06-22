@@ -68,7 +68,8 @@ $wslServerDir = Convert-ToWslPath $serverDir
 $wslOut = Convert-ToWslPath $serverLogOut
 $wslErr = Convert-ToWslPath $serverLogErr
 $venvActivate = Quote-BashPath (($WslVenv.TrimEnd([char[]]@("/", "\"))) + "/bin/activate")
-$uvicornCmd = "cd '$wslServerDir' && source $venvActivate && exec python -m uvicorn main:app --host 0.0.0.0 --port $Port > '$wslOut' 2> '$wslErr'"
+$runtimeEnv = "export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1"
+$uvicornCmd = "cd '$wslServerDir' && source $venvActivate && $runtimeEnv && exec python -m uvicorn main:app --host 0.0.0.0 --port $Port > '$wslOut' 2> '$wslErr'"
 $serverPs = "wsl.exe --cd '$wslServerDir' -e bash -lc `"$uvicornCmd`""
 $serverEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($serverPs))
 $serverProc = Start-Process -FilePath powershell.exe -ArgumentList @("-NoProfile", "-EncodedCommand", $serverEncoded) -WindowStyle Hidden -PassThru

@@ -13,6 +13,9 @@ faster-whisper==1.0.3
 # LLM (Ollama HTTP) と TTS (VOICEVOX HTTP) 両方とも httpx で叩く
 httpx==0.27.2
 
+# Vision / camera watcher (optional; enabled with VISION_ENABLED=1)
+opencv-python-headless>=4.10
+
 # 定期発話スケジューラ (cron 式の評価)
 croniter>=2.0
 

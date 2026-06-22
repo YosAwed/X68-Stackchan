@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     IRODORI_FORCE_FP16: int = Field(default=1, ge=0, le=1)
     IRODORI_CHECKPOINT: str | None = None
     IRODORI_SEED: int | None = 68000
+    IRODORI_EMOJI_STYLE: int = Field(default=1, ge=0, le=1)
 
     # ---- VOICEVOX (when TTS_BACKEND=voicevox) ----
     VOICEVOX_HOST: str = "http://127.0.0.1:50021"
@@ -82,6 +83,25 @@ class Settings(BaseSettings):
     # ---- Persona override ----
     PERSONA_FILE: str | None = None
 
+    # ---- Vision / camera watcher ----
+    VISION_ENABLED: int = Field(default=0, ge=0, le=1)
+    VISION_MODE: str = "motion"
+    VISION_CAMERA_INDEX: int = Field(default=0, ge=0)
+    VISION_IMAGE_PATH: str = ""
+    VISION_POLL_INTERVAL_S: float = Field(default=0.5, gt=0)
+    VISION_SNAPSHOT_INTERVAL_S: float = Field(default=180.0, ge=10.0)
+    VISION_COOLDOWN_S: float = Field(default=45.0, ge=1.0)
+    VISION_MOTION_THRESHOLD: float = Field(default=0.02, gt=0.0)
+    VISION_MIN_CHANGED_PIXELS: int = Field(default=500, gt=0)
+    VISION_SID: str = "vision"
+    VISION_PROVIDER: str = "ollama"
+    VISION_OLLAMA_HOST: str | None = None
+    VISION_OLLAMA_MODEL: str = ""
+    VISION_OLLAMA_TIMEOUT_S: float = Field(default=45.0, gt=0.0)
+    VISION_OPENAI_HOST: str | None = None
+    VISION_OPENAI_MODEL: str = ""
+    VISION_OPENAI_API_KEY: str = ""
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -93,6 +113,24 @@ class Settings(BaseSettings):
     @classmethod
     def _upper_log_level(cls, v: str) -> str:
         return v.upper()
+
+    @field_validator("VISION_MODE")
+    @classmethod
+    def _vision_mode(cls, v: str) -> str:
+        value = v.strip().lower()
+        allowed = {"motion", "snapshot"}
+        if value not in allowed:
+            raise ValueError(f"VISION_MODE must be one of {sorted(allowed)}")
+        return value
+
+    @field_validator("VISION_PROVIDER")
+    @classmethod
+    def _vision_provider(cls, v: str) -> str:
+        value = v.strip().lower()
+        allowed = {"ollama", "openai", "lmstudio"}
+        if value not in allowed:
+            raise ValueError(f"VISION_PROVIDER must be one of {sorted(allowed)}")
+        return value
 
     @field_validator("IRODORI_SEED", mode="before")
     @classmethod
@@ -118,6 +156,9 @@ class Settings(BaseSettings):
 
     def is_time_flavor_enabled(self) -> bool:
         return bool(Settings().LLM_TIME_FLAVOR)
+
+    def is_vision_enabled(self) -> bool:
+        return bool(Settings().VISION_ENABLED)
 
     def get_log_level(self) -> str:
         return Settings().LOG_LEVEL

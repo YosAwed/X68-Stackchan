@@ -31,6 +31,7 @@ from urllib.parse import quote
 
 from emote import classify as classify_emote
 from emote import classify_reaction
+from emote import with_irodori_emoji
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, Response
 from llm import LLM
@@ -39,6 +40,7 @@ from settings import settings
 from stt import STT
 from tts import TTS
 from utterance_queue import Utterance, UtteranceQueue
+from vision_watcher import VisionWatcher
 from wav_cache import WavCache
 
 logging.basicConfig(
@@ -49,13 +51,14 @@ log = logging.getLogger("stackchan")
 
 # 起動時に有効設定の要約を出す（診断強化）。機密値は出さない。
 log.info(
-    "config: whisper=%s device=%s vad=%s llm=%s tts=%s scheduler=%s sessions=%d",
+    "config: whisper=%s device=%s vad=%s llm=%s tts=%s scheduler=%s vision=%s sessions=%d",
     settings.WHISPER_MODEL,
     settings.WHISPER_DEVICE,
     "on" if settings.WHISPER_VAD_FILTER else "off",
     settings.OLLAMA_MODEL,
     settings.TTS_BACKEND,
     "enabled" if settings.is_scheduler_enabled() else "disabled",
+    "enabled" if settings.is_vision_enabled() else "disabled",
     settings.MAX_SESSIONS,
 )
 
@@ -95,6 +98,7 @@ def _tts_cache_version() -> str:
             f"seed={settings.IRODORI_SEED if settings.IRODORI_SEED is not None else 'random'}",
             f"ref={settings.IRODORI_REF_WAV or 'no-ref'}",
             f"ckpt={settings.IRODORI_CHECKPOINT or 'auto'}",
+            f"emoji={settings.IRODORI_EMOJI_STYLE}",
         ])
     elif settings.TTS_BACKEND == "voicevox":
         parts.append(f"speaker={settings.VOICEVOX_SPEAKER}")
@@ -106,6 +110,7 @@ wav_cache = WavCache(
     version=_tts_cache_version(),
 )
 _scheduler: Scheduler | None = None
+_vision: VisionWatcher | None = None
 
 
 async def _prewarm_tts():
@@ -139,7 +144,7 @@ async def _prewarm_stt():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _scheduler
+    global _scheduler, _vision
     if settings.is_whisper_prewarm_enabled():
         asyncio.create_task(_prewarm_stt())
     # 起動時に TTS を一度叩いて初回ペナルティを消す。
@@ -159,7 +164,19 @@ async def lifespan(app: FastAPI):
         await _scheduler.start()
     else:
         log.info("scheduler disabled (set SCHEDULE_ENABLED=1 to enable)")
+    if settings.is_vision_enabled():
+        _vision = VisionWatcher(
+            llm=llm,
+            queue=queue,
+            make_utterance=_queued_utterance,
+            limit_text=_limit_spoken_text,
+        )
+        await _vision.start()
+    else:
+        log.info("vision disabled (set VISION_ENABLED=1 to enable)")
     yield
+    if _vision is not None:
+        await _vision.stop()
     if _scheduler is not None:
         await _scheduler.stop()
 
@@ -200,30 +217,36 @@ def _limit_spoken_text(text: str) -> str:
     return (cut or text[:limit].rstrip("、。,.!?！？ ")) + "。"
 
 
-def _synthesize_speech(text: str, *, use_cache: bool = True) -> bytes:
-    if use_cache:
-        cached = wav_cache.get(text)
-        if cached is not None:
-            log.info("TTS cache hit: %r", text)
-            return cached
-    wav = tts.synthesize(text)
-    if use_cache:
-        wav_cache.put(text, wav)
-    return wav
+def _tts_input_text(text: str, emote: str) -> str:
+    if settings.TTS_BACKEND == "irodori" and bool(settings.IRODORI_EMOJI_STYLE):
+        return with_irodori_emoji(text, emote)
+    return text
 
 
 def _synthesize_speech_with_cache_info(
-    text: str, *, use_cache: bool = True
+    text: str, *, emote: str | None = None, use_cache: bool = True
 ) -> tuple[bytes, bool]:
+    synth_text = _tts_input_text(text, emote or classify_emote(text))
     if use_cache:
-        cached = wav_cache.get(text)
+        cached = wav_cache.get(synth_text)
         if cached is not None:
-            log.info("TTS cache hit: %r", text)
+            log.info("TTS cache hit: %r", synth_text)
             return cached, True
-    wav = tts.synthesize(text)
+    wav = tts.synthesize(synth_text)
     if use_cache:
-        wav_cache.put(text, wav)
+        wav_cache.put(synth_text, wav)
     return wav, False
+
+
+def _synthesize_speech(text: str, *, emote: str | None = None, use_cache: bool = True) -> bytes:
+    wav, _ = _synthesize_speech_with_cache_info(text, emote=emote, use_cache=use_cache)
+    return wav
+
+
+def _queued_utterance(bot_text: str, source: str) -> Utterance:
+    emote = classify_emote(bot_text)
+    wav = _synthesize_speech(bot_text, emote=emote)
+    return Utterance(wav=wav, bot_text=bot_text, source=source, emote=emote)
 
 
 def _wav_response(
@@ -231,11 +254,9 @@ def _wav_response(
     *,
     user_text: str | None,
     bot_text: str,
+    emote: str,
     timings: dict[str, float],
 ) -> Response:
-    # ユーザ発話に褒め言葉が含まれていれば embarrassed (はにかみ) に倒す。
-    # 無い時は通常通り bot_text を分類。
-    emote = classify_reaction(user_text or "", bot_text)
     headers = {
         "X-Stackchan-Bot-Text": quote(bot_text),
         "X-Stackchan-Timing": _timing_header(timings),
@@ -317,7 +338,8 @@ async def chat(
 
     try:
         t0 = time.perf_counter()
-        wav_out, cache_hit = _synthesize_speech_with_cache_info(bot_text)
+        emote = classify_reaction(user_text, bot_text)
+        wav_out, cache_hit = _synthesize_speech_with_cache_info(bot_text, emote=emote)
         timings["tts"] = _elapsed_ms(t0)
         if cache_hit:
             timings["tts_cache"] = 1.0
@@ -330,6 +352,7 @@ async def chat(
         wav_out,
         user_text=user_text,
         bot_text=bot_text,
+        emote=emote,
         timings=timings,
     )
 
@@ -343,7 +366,8 @@ def speak(text: str = Form(...)):
         raise HTTPException(status_code=400, detail="text is empty")
     try:
         t0 = time.perf_counter()
-        wav_out, cache_hit = _synthesize_speech_with_cache_info(text)
+        emote = classify_emote(text)
+        wav_out, cache_hit = _synthesize_speech_with_cache_info(text, emote=emote)
         timings["tts"] = _elapsed_ms(t0)
         if cache_hit:
             timings["tts_cache"] = 1.0
@@ -351,7 +375,7 @@ def speak(text: str = Form(...)):
         log.exception("TTS failed")
         return JSONResponse(status_code=500, content={"error": f"tts: {e}"})
     timings["total"] = _elapsed_ms(total_t0)
-    return _wav_response(wav_out, user_text=None, bot_text=text, timings=timings)
+    return _wav_response(wav_out, user_text=None, bot_text=text, emote=emote, timings=timings)
 
 
 @app.post("/chat_text")
@@ -370,7 +394,8 @@ def chat_text(text: str = Form(...), sid: str = Form("default")):
         return JSONResponse(status_code=500, content={"error": f"llm: {e}"})
     try:
         t0 = time.perf_counter()
-        wav_out, cache_hit = _synthesize_speech_with_cache_info(bot_text)
+        emote = classify_reaction(text, bot_text)
+        wav_out, cache_hit = _synthesize_speech_with_cache_info(bot_text, emote=emote)
         timings["tts"] = _elapsed_ms(t0)
         if cache_hit:
             timings["tts_cache"] = 1.0
@@ -378,7 +403,7 @@ def chat_text(text: str = Form(...), sid: str = Form("default")):
         log.exception("TTS failed")
         return JSONResponse(status_code=500, content={"error": f"tts: {e}"})
     timings["total"] = _elapsed_ms(total_t0)
-    return _wav_response(wav_out, user_text=text, bot_text=bot_text, timings=timings)
+    return _wav_response(wav_out, user_text=text, bot_text=bot_text, emote=emote, timings=timings)
 
 
 @app.post("/reset")
@@ -438,8 +463,8 @@ async def enqueue(
             bot_text = text
         if not bot_text:
             raise HTTPException(500, "empty bot_text after LLM")
-        wav = await asyncio.to_thread(_synthesize_speech, bot_text)
         emote = classify_emote(bot_text)
+        wav = await asyncio.to_thread(_synthesize_speech, bot_text, emote=emote)
         ok = reservation.commit(Utterance(
             wav=wav,
             bot_text=bot_text,
@@ -461,8 +486,22 @@ def scheduler_status():
     return {"enabled": True, **_scheduler.status()}
 
 
+@app.get("/vision/status")
+def vision_status():
+    if _vision is None:
+        return {
+            "enabled": settings.is_vision_enabled(),
+            "running": False,
+            "camera_index": settings.VISION_CAMERA_INDEX,
+            "vision_model": settings.VISION_OLLAMA_MODEL or None,
+            "poll_interval_s": settings.VISION_POLL_INTERVAL_S,
+            "cooldown_s": settings.VISION_COOLDOWN_S,
+        }
+    return _vision.status()
+
+
 # ---- 簡易管理画面 -----------------------------------------------------------
-# /admin を開くと /ready /scheduler/status をブラウザから見れる。
+# /admin を開くと /ready /scheduler/status /vision/status をブラウザから見れる。
 # /enqueue を叩くフォームつき。送信時は ENQUEUE_TOKEN と同じ値を入力する。
 ADMIN_HTML = """<!doctype html>
 <html lang="ja"><head>
@@ -490,6 +529,9 @@ ADMIN_HTML = """<!doctype html>
 
 <h2>スケジューラ (<code>/scheduler/status</code>)</h2>
 <div id="sched">loading...</div>
+
+<h2>カメラ (<code>/vision/status</code>)</h2>
+<pre id="vision">loading...</pre>
 
 <h2>テスト発話 push (<code>/enqueue</code>)</h2>
 <form id="f">
@@ -528,6 +570,14 @@ async function loadSched(){
     document.getElementById('sched').innerHTML = '<span class="err">取得失敗: '+e+'</span>';
   }
 }
+async function loadVision(){
+  try{
+    const r = await fetch('/vision/status'); const j = await r.json();
+    document.getElementById('vision').textContent = JSON.stringify(j, null, 2);
+  }catch(e){
+    document.getElementById('vision').innerHTML = '<span class="err">/vision/status 取得失敗: '+e+'</span>';
+  }
+}
 document.getElementById('f').addEventListener('submit', async ev => {
   ev.preventDefault();
   const fd = new FormData(ev.target);
@@ -544,9 +594,10 @@ document.getElementById('f').addEventListener('submit', async ev => {
   const j = await r.json().catch(()=>({error:'parse failed', status:r.status}));
   document.getElementById('enq').textContent = JSON.stringify(j, null, 2);
   loadSched();
+  loadVision();
 });
-loadReady(); loadSched();
-setInterval(()=>{loadReady(); loadSched();}, 5000);
+loadReady(); loadSched(); loadVision();
+setInterval(()=>{loadReady(); loadSched(); loadVision();}, 5000);
 </script>
 </body></html>
 """

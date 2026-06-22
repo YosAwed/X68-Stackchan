@@ -21,11 +21,19 @@ from typing import Any
 
 from croniter import croniter
 from emote import classify as classify_emote
+from emote import with_irodori_emoji
 from history_store import HistoryStore
+from settings import settings
 from utterance_queue import Utterance, UtteranceQueue
 from wav_cache import WavCache
 
 log = logging.getLogger(__name__)
+
+
+def _tts_input_text(text: str, emote: str) -> str:
+    if settings.TTS_BACKEND == "irodori" and bool(settings.IRODORI_EMOJI_STYLE):
+        return with_irodori_emoji(text, emote)
+    return text
 
 
 @dataclass
@@ -162,16 +170,18 @@ class Scheduler:
         log.info("scheduler pre-synthesizing %d fixed trigger(s) ...", len(fixed))
         for t in fixed:
             text = t.text or ""
+            emote = classify_emote(text)
+            synth_text = _tts_input_text(text, emote)
             # まずディスクキャッシュを試す (前回起動時の合成結果が残っていれば即時)
-            wav = self.wav_cache.get(text)
+            wav = self.wav_cache.get(synth_text)
             if wav is not None:
                 t._cached_wav = wav
                 log.info("  cached %s (%d bytes, from disk)", t.name, len(wav))
                 continue
             try:
-                wav = await asyncio.to_thread(self.tts.synthesize, text)
+                wav = await asyncio.to_thread(self.tts.synthesize, synth_text)
                 t._cached_wav = wav
-                self.wav_cache.put(text, wav)  # 次回起動用にディスクへ
+                self.wav_cache.put(synth_text, wav)  # 次回起動用にディスクへ
                 log.info("  cached %s (%d bytes, fresh)", t.name, len(wav))
             except Exception as e:
                 # キャッシュ失敗は致命的でない (発火時に再試行される)
@@ -242,15 +252,20 @@ class Scheduler:
             if trig.kind == "fixed" and trig._cached_wav is not None:
                 wav = trig._cached_wav
             else:
-                wav = await asyncio.to_thread(self.tts.synthesize, bot_text)
+                emote = classify_emote(bot_text)
+                wav = await asyncio.to_thread(
+                    self.tts.synthesize,
+                    _tts_input_text(bot_text, emote),
+                )
                 # 起動時に失敗していた fixed もここで遅延キャッシュ
                 if trig.kind == "fixed":
                     trig._cached_wav = wav
+            emote = classify_emote(bot_text)
             reservation.commit(Utterance(
                 wav=wav,
                 bot_text=bot_text,
                 source=f"sched:{trig.name}",
-                emote=classify_emote(bot_text),
+                emote=emote,
             ))
             trig.record_fire(datetime.now())
         finally:

@@ -140,6 +140,38 @@ VALID_CATEGORIES: tuple[str, ...] = (
     "cold",
 )
 
+_IRODORI_EMOJI_BY_CATEGORY: dict[str, str] = {
+    "joy": "😆",
+    "sad": "😭",
+    "embarrassed": "🫣",
+    "confused": "🤔",
+    "surprised": "😲",
+    "sleepy": "😪",
+    "confident": "😊",
+    "angry": "😠",
+    "panic": "😰",
+    "shy": "🫣",
+    "mischief": "😏",
+    "relieved": "😌",
+    "cold": "🙄",
+}
+
+
+def irodori_emoji_for(category: str) -> str:
+    """Irodori-TTS の絵文字スタイル制御に使う prefix を返す。"""
+    return _IRODORI_EMOJI_BY_CATEGORY.get(category, "")
+
+
+def with_irodori_emoji(text: str, category: str) -> str:
+    """表示用テキストは変えず、TTS 入力だけ感情絵文字つきにする。"""
+    emoji = irodori_emoji_for(category)
+    if not emoji or not text:
+        return text
+    stripped = text.lstrip()
+    if stripped.startswith(emoji):
+        return text
+    return f"{emoji} {text}"
+
 
 def classify(text: str) -> str:
     """text を 1 つの感情カテゴリにマップする。未マッチなら 'neutral'。"""

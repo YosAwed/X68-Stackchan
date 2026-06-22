@@ -1,5 +1,5 @@
 """ぺけ子ちゃん表情シート 4 枚 (1254x1254, 3x3 グリッド) を
-36 枚の 240x240 JPG にスライスして firmware/data/face_NN.jpg として保存する。
+36 枚の 320x240 JPG にスライスして firmware/data/face_NN.jpg として保存する。
 
 JPG にしているのは ESP32-S3 の LittleFS 領域節約のため。アニメ調なので
 quality=92 でも見分けが付かない。
@@ -15,14 +15,16 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from face_postprocess import postprocess_image
-
 HERE = Path(__file__).resolve().parent          # firmware/tools/
 FIRMWARE = HERE.parent                          # firmware/
 SRC_DIR  = FIRMWARE / "assets" / "raw"          # 元シートを置く場所 (LittleFS には焼かない)
 OUT_DIR  = FIRMWARE / "data"                    # LittleFS root に直接書き出す
 
-TARGET = 240  # 出力サイズ (CoreS3 320x240 に中央寄せ)
+TARGET_W = 320
+TARGET_H = 240
+FACE_CROP_W = 216
+FACE_CROP_H = 162
+FACE_CROP_Y = 32
 
 
 def find_sheets() -> list[Path]:
@@ -45,12 +47,12 @@ def slice_grid(img: Image.Image) -> list[Image.Image]:
             bg = cell.getpixel((4, 4))
             d.rectangle((0, 0, pad, pad), fill=bg)
 
-            # 顔は概ね上端〜中央。 正方形に整えて 240 にリサイズ
-            side = min(cw, ch)
-            left = (cw - side) // 2
-            top = 0
-            cell = cell.crop((left, top, left + side, top + side))
-            cell = cell.resize((TARGET, TARGET), Image.LANCZOS)
+            # 顔は上側にあるので、肩と上余白を落として全画面サイズへ拡大する。
+            crop_w = min(cw, FACE_CROP_W)
+            crop_h = min(ch - FACE_CROP_Y, FACE_CROP_H)
+            left = (cw - crop_w) // 2
+            cell = cell.crop((left, FACE_CROP_Y, left + crop_w, FACE_CROP_Y + crop_h))
+            cell = cell.resize((TARGET_W, TARGET_H), Image.LANCZOS)
             out.append(cell)
     return out
 
@@ -66,7 +68,6 @@ def main() -> None:
         img = Image.open(sheet).convert("RGB")
         for cell in slice_grid(img):
             out = OUT_DIR / f"face_{idx:02d}.jpg"
-            cell = postprocess_image(cell)
             cell.save(out, "JPEG", quality=92, optimize=True, progressive=False)
             idx += 1
 

@@ -51,6 +51,7 @@ static uint32_t       g_headpat_idle_cool_ms = 0;   // BSP fallback の再発火
 static uint32_t       g_sleep_enter_ms = 0;
 static bool           g_sleep_head_released = false;
 static uint32_t       g_last_mic_log_ms = 0;
+static bool           g_mic_overlay_visible = false;
 static uint32_t       g_last_pull_ms    = 0;
 
 // WiFi ランタイム回復用バックオフ状態 (ensureWiFiConnected で使用)
@@ -180,17 +181,15 @@ static inline void flashIdleMicroRgb() {
 }
 
 static void clearSideStatus() {
-    const int dx = (M5.Display.width() - PekekoFace::kSize) / 2;
-    if (dx <= 0) return;
-    M5.Display.fillRect(0, 0, dx, M5.Display.height(), X68_BG);
-    M5.Display.fillRect(dx + PekekoFace::kSize, 0,
-                        M5.Display.width() - dx - PekekoFace::kSize,
-                        M5.Display.height(), X68_BG);
+    // 顔画像を 320x240 全画面にしたため、左右のステータス余白はない。
 }
 
 static void setState(State s, int face_id = -1) {
     g_state = s;
-    if (face_id > 0) g_face.show(face_id);
+    if (face_id > 0) {
+        g_face.show(face_id);
+        g_mic_overlay_visible = false;
+    }
     clearSideStatus();
     // Idle に入る時にまばたき/マイクロ表情タイマを初期化、Idle 以外に出る時は停止。
     if (s == State::Idle) {
@@ -219,26 +218,36 @@ static void setState(State s, int face_id = -1) {
 }
 
 static void drawMicLevel(uint16_t peak, uint16_t rms) {
-    const int dx = (M5.Display.width() - PekekoFace::kSize) / 2;
-    if (dx < 28) return;
+    constexpr uint16_t ACTIVE_PEAK_MIN = 120;
+    constexpr uint16_t ACTIVE_RMS_MIN = 80;
+    const bool active = peak >= ACTIVE_PEAK_MIN || rms >= ACTIVE_RMS_MIN;
 
-    constexpr int x = 8;
-    constexpr int y = 24;
-    constexpr int w = 18;
-    constexpr int h = 188;
-    constexpr uint16_t frame = 0x7BEF;
-    constexpr uint16_t peak_color = 0xFBE0;
-    constexpr uint16_t rms_color = 0x07E0;
+    if (!active) {
+        if (g_mic_overlay_visible) {
+            g_face.refresh();
+            g_mic_overlay_visible = false;
+        }
+    } else {
+        constexpr int x = 6;
+        constexpr int y = 34;
+        constexpr int w = 14;
+        constexpr int h = 156;
+        constexpr uint16_t panel = 0x0000;
+        constexpr uint16_t frame = 0x7BEF;
+        constexpr uint16_t peak_color = 0xFBE0;
+        constexpr uint16_t rms_color = 0x07E0;
 
-    const int rms_h = (int)((uint32_t)rms * h / 12000);
-    const int peak_h = (int)((uint32_t)peak * h / 18000);
-    const int rh = rms_h > h ? h : rms_h;
-    const int ph = peak_h > h ? h : peak_h;
+        const int rms_h = (int)((uint32_t)rms * h / 12000);
+        const int peak_h = (int)((uint32_t)peak * h / 18000);
+        const int rh = rms_h > h ? h : rms_h;
+        const int ph = peak_h > h ? h : peak_h;
 
-    M5.Display.fillRect(x - 2, y - 2, w + 4, h + 4, X68_BG);
-    M5.Display.drawRect(x, y, w, h, frame);
-    if (ph > 0) M5.Display.fillRect(x + 2, y + h - ph, w - 4, ph, peak_color);
-    if (rh > 0) M5.Display.fillRect(x + 5, y + h - rh, w - 10, rh, rms_color);
+        M5.Display.fillRoundRect(x - 3, y - 3, w + 6, h + 6, 4, panel);
+        M5.Display.drawRect(x, y, w, h, frame);
+        if (ph > 0) M5.Display.fillRect(x + 2, y + h - ph, w - 4, ph, peak_color);
+        if (rh > 0) M5.Display.fillRect(x + 5, y + h - rh, w - 10, rh, rms_color);
+        g_mic_overlay_visible = true;
+    }
 
     const uint32_t now = millis();
     if (now - g_last_mic_log_ms >= 500) {

@@ -53,6 +53,36 @@ OUTPUT_SR = 16000  # CoreS3 の I2S 入力に揃える
 _TMPFS_DIR: str | None = "/dev/shm" if os.path.isdir("/dev/shm") else None
 
 
+def _patch_reference_encoder_dtype() -> None:
+    """Keep reference-audio latents in the same dtype as the int4/fp16 model.
+
+    Irodori-TTS-Lite runs the quantized checkpoint with fp16 weights, but the
+    reference WAV path can produce float32 latents before the speaker encoder.
+    Cast at the encoder boundary so --ref-wav works without editing the
+    installed package.
+    """
+    try:
+        from irodori_tts.model import ReferenceLatentEncoder
+    except Exception:
+        log.exception("failed to import ReferenceLatentEncoder for dtype patch")
+        return
+
+    if getattr(ReferenceLatentEncoder.forward, "_stackchan_dtype_patch", False):
+        return
+
+    original_forward = ReferenceLatentEncoder.forward
+
+    def forward(self, latent: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        weight = getattr(getattr(self, "in_proj", None), "weight", None)
+        if weight is not None and latent.dtype != weight.dtype:
+            latent = latent.to(dtype=weight.dtype)
+        return original_forward(self, latent, mask)
+
+    forward._stackchan_dtype_patch = True  # type: ignore[attr-defined]
+    ReferenceLatentEncoder.forward = forward  # type: ignore[method-assign]
+    log.info("patched Irodori reference encoder dtype cast")
+
+
 class TTS:
     def __init__(self):
         ref_wav = settings.IRODORI_REF_WAV or None
@@ -68,6 +98,7 @@ class TTS:
             force_fp16=force_fp16,
         )
         irodori_tts_lite.patch()
+        _patch_reference_encoder_dtype()
 
         self._checkpoint = irodori_tts_lite.resolve_checkpoint(checkpoint)
         self._ref_wav = ref_wav

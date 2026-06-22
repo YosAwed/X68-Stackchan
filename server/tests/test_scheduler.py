@@ -118,7 +118,7 @@ async def test_fire_fixed_pushes_to_queue():
     t = ScheduledTrigger(name="fx", cron="* * * * *",
                          kind="fixed", text="やったー、できた")
     await s._fire(t)
-    assert tts.calls == ["やったー、できた"]
+    assert tts.calls == ["😆 やったー、できた"]
     u = await q.pull(0)
     assert u is not None
     assert u.bot_text == "やったー、できた"

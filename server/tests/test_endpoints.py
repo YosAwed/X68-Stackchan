@@ -1,4 +1,4 @@
-"""main.py の /pull, /enqueue, /scheduler/status エンドポイントの結合テスト。
+"""main.py の /pull, /enqueue, /scheduler/status, /vision/status エンドポイントの結合テスト。
 
 faster-whisper / Irodori / Ollama を CI で起動できないため、
 import 前に stt / llm / tts モジュールを sys.modules で差し替え、
@@ -22,6 +22,7 @@ def app_with_fakes(monkeypatch_module):
     """main.py を import する前に重い依存をフェイクモジュールに差し替える。"""
     # CI / テストでは pre-warm を抑制 (FakeTTS は動くが、無用なログ抑止)
     monkeypatch_module.setenv("TTS_PREWARM", "0")
+    monkeypatch_module.setenv("VISION_ENABLED", "0")
     # /enqueue は ENQUEUE_TOKEN env が必要なのでテスト用トークンを仕込む
     monkeypatch_module.setenv("ENQUEUE_TOKEN", TEST_ENQUEUE_TOKEN)
 
@@ -311,6 +312,18 @@ def test_scheduler_status_when_disabled(client):
     assert r.json() == {"enabled": False}
 
 
+# ---------------- /vision/status ----------------
+
+
+def test_vision_status_when_disabled(client):
+    r = client.get("/vision/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["enabled"] is False
+    assert body["running"] is False
+    assert body["camera_index"] == 0
+
+
 # ---------------- /admin ----------------
 
 
@@ -321,5 +334,5 @@ def test_admin_returns_html(client):
     body = r.text
     assert "<title>Stack-chan admin</title>" in body
     # 主要なエンドポイントに JS で fetch している
-    for fragment in ("/ready", "/scheduler/status", "/enqueue"):
+    for fragment in ("/ready", "/scheduler/status", "/vision/status", "/enqueue"):
         assert fragment in body
