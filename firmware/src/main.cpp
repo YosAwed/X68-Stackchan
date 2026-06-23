@@ -364,7 +364,16 @@ static bool ensureWiFiConnected() {
 static void playWavWithLipsync(const uint8_t* wav, size_t size,
                                const char* emote = nullptr,
                                const String& caption = String()) {
-    if (!wav || size < 44) return;
+    if (!wav || size < 44) {
+        Serial.printf("[AUDIO] invalid wav ptr=%d bytes=%u\n",
+                      wav ? 1 : 0,
+                      (unsigned)size);
+        return;
+    }
+    Serial.printf("[AUDIO] playback start bytes=%u emote=%s caption_len=%u\n",
+                  (unsigned)size,
+                  (emote && emote[0]) ? emote : "neutral",
+                  (unsigned)caption.length());
 
     M5.Speaker.end();
     delay(20);
@@ -416,6 +425,7 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size,
                       wav_started ? 1 : 0);
         drawCaption(caption);
         while (M5.Speaker.isPlaying()) delay(4);
+        Serial.println("[AUDIO] playback done");
         return;
     }
     pcm_bytes -= pcm_bytes % wav_block;
@@ -437,8 +447,12 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size,
                   (unsigned)pcm_bytes,
                   playback_started ? 1 : 0);
     if (!playback_started) {
-        M5.Speaker.playWav(wav, size, /*repeat=*/1, /*channel=*/0,
-                           /*stop_current_sound=*/true);
+        const bool wav_started = M5.Speaker.playWav(
+            wav, size, /*repeat=*/1, /*channel=*/0,
+            /*stop_current_sound=*/true);
+        Serial.printf("[AUDIO] playWav after playRaw fail bytes=%u ok=%d\n",
+                      (unsigned)size,
+                      wav_started ? 1 : 0);
     }
     drawCaption(caption);
 
@@ -500,6 +514,7 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size,
     // 締めは口閉じ (emote ペアに合わせる)
     g_face.show(face_close);
     drawCaption(caption);
+    Serial.println("[AUDIO] playback done");
 }
 
 static void handleHttpError(int status) {
@@ -718,6 +733,8 @@ void loop() {
 #endif
             // LCD タッチ または リモコン BtnA で録音開始
             if ((pressed || remote_ptt_edge) && !g_wait_release_after_auto_send) {
+                Serial.printf("[PTT ] start source=%s\n",
+                              pressed ? "touch" : "remote");
                 if (pressed) {
                     g_face.show(faces::F_SURPRISED);
                     delay(150);
@@ -766,6 +783,8 @@ void loop() {
                 millis() - g_listening_start_ms >= ((uint32_t)MAX_REC_SECONDS * 1000u + 500u);
             // ローカルボタンもリモコンボタンも離されたら送信
             if ((!pressed && !g_remote.btnA()) || rec_overflow || rec_timeout) {
+                const uint32_t rec_dur =
+                    g_listening_start_ms != 0 ? millis() - g_listening_start_ms : 0;
                 if (rec_overflow || rec_timeout) {
                     Serial.printf("[REC ] %s (%us): auto-sending\n",
                                   rec_overflow ? "Buffer full" : "Timeout",
@@ -775,6 +794,13 @@ void loop() {
                     playOverflowBeep();
                 }
                 const size_t n = g_rec.stop();
+                Serial.printf("[REC ] stop bytes=%u dur=%u overflow=%d timeout=%d touch=%d remote=%d\n",
+                              (unsigned)n,
+                              (unsigned)rec_dur,
+                              rec_overflow ? 1 : 0,
+                              rec_timeout ? 1 : 0,
+                              pressed ? 1 : 0,
+                              g_remote.btnA() ? 1 : 0);
                 g_listening_start_ms = 0;
                 setState(State::Thinking, faces::FACE_THINKING);
                 const uint32_t t_send_start = millis();
@@ -806,9 +832,15 @@ void loop() {
                         Serial.printf("[EMO ] %s\n", r.emote.c_str());
                     }
                     g_state = State::Speaking;
+                    Serial.printf("[PLAY] chat response start bytes=%u\n",
+                                  (unsigned)r.body_size);
                     playWavWithLipsync(r.body, r.body_size, r.emote.c_str(), r.bot_text);
+                    Serial.println("[PLAY] chat response end");
                     free(r.body);
                 } else {
+                    Serial.printf("[HTTP] /chat failed status=%d body=%u\n",
+                                  r.http_status,
+                                  (unsigned)r.body_size);
                     handleHttpError(r.http_status);
                 }
 #endif

@@ -3,6 +3,7 @@
 // ========================================================
 #pragma once
 
+#include <Arduino.h>
 #include <WiFi.h>
 #include <cstdlib>
 #include <cstring>
@@ -122,6 +123,8 @@ public:
     // 録音 WAV をサーバに送って、応答 WAV を返す
     static ChatResponse send(const uint8_t* wav, size_t wav_size) {
         ChatResponse r;
+        Serial.printf("[HTTP] /chat post wav=%u host=%s:%u\n",
+                      (unsigned)wav_size, SERVER_HOST, (unsigned)SERVER_PORT);
 
         WiFiClient client;
         if (!connectWithRetry(client, SERVER_HOST, SERVER_PORT)) {
@@ -200,6 +203,12 @@ public:
                 r.emote = value;
             }
         }
+        Serial.printf("[HTTP] /chat status=%d len=%u user='%s' bot='%s' emote='%s'\n",
+                      r.http_status,
+                      (unsigned)resp_len,
+                      r.user_text.c_str(),
+                      r.bot_text.c_str(),
+                      r.emote.length() ? r.emote.c_str() : "neutral");
 
         if (r.http_status != 200 || resp_len == 0) {
             log_e("HTTP %d, len=%u", r.http_status, (unsigned)resp_len);
@@ -210,7 +219,10 @@ public:
         // ボディを PSRAM に受ける
         r.body = static_cast<uint8_t*>(ps_malloc(resp_len));
         if (!r.body) {
-            log_e("ps_malloc(%u) failed for response", (unsigned)resp_len);
+            log_e("ps_malloc(%u) failed for response heap=%u psram=%u",
+                  (unsigned)resp_len,
+                  (unsigned)ESP.getFreeHeap(),
+                  (unsigned)ESP.getFreePsram());
             client.stop();
             return r;
         }
@@ -223,6 +235,10 @@ public:
         }
         r.body_size = got;
         r.ok = (got == resp_len);
+        Serial.printf("[HTTP] /chat body got=%u/%u ok=%d\n",
+                      (unsigned)got,
+                      (unsigned)resp_len,
+                      r.ok ? 1 : 0);
         if (!r.ok) {
             free(r.body);
             r.body = nullptr;

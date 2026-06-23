@@ -204,6 +204,32 @@ def test_chat_skips_time_of_day_flavor_when_disabled(
     assert "気分のヒント" not in msgs[1]["content"]
 
 
+def test_chat_adds_recent_reply_hint_when_history_exists(
+    tmp_path: Path, fake_ollama_response, monkeypatch
+):
+    monkeypatch.setenv("LLM_TIME_FLAVOR", "0")
+    llm = _make_llm(tmp_path, persistent=False)
+
+    with patch.object(llm._client, "post", return_value=fake_ollama_response):
+        llm.chat("alice", "こんにちは")
+
+    captured: dict = {}
+
+    def fake_post(url, json):
+        captured["payload"] = json
+        return fake_ollama_response
+
+    with patch.object(llm._client, "post", side_effect=fake_post):
+        llm.chat("alice", "今日は天気が悪かった")
+
+    msgs = captured["payload"]["messages"]
+    assert msgs[2]["role"] == "system"
+    assert "返答のヒント" in msgs[2]["content"]
+    assert "ぼっとの応答だよ" in msgs[2]["content"]
+    assert msgs[3]["role"] == "user"
+    assert msgs[-1]["content"] == "今日は天気が悪かった"
+
+
 def test_chat_includes_last_interaction_when_persistent(
     tmp_path: Path, fake_ollama_response
 ):
