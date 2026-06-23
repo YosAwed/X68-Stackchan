@@ -6,7 +6,9 @@ import asyncio
 import base64
 import importlib
 import logging
+import re
 import time
+from collections import deque
 from pathlib import Path
 from typing import Callable
 
@@ -16,6 +18,117 @@ from settings import settings
 from utterance_queue import Utterance, UtteranceQueue
 
 log = logging.getLogger("stackchan.vision")
+
+_VISION_SYSTEM_PROMPT = (
+    "あなたは画像の観察だけを行う。"
+    "キャラクター、ペルソナ、プロンプト、指示、制約、推論過程は説明しない。"
+    "画像の中で確実に見える具体物、人の動き、光や配置の変化を1つだけ述べる。"
+    "あいまいなら、色、明るさ、配置、動きのどれかだけを短く述べる。"
+    "毎回同じ言い回しにしない。"
+    "見えないこと、ユーザーの意図、物語、感情、比喩は書かない。"
+    "日本語の短い一文だけ。箇条書き、引用符、前置きは禁止。"
+)
+
+_VISION_USER_PROMPT = (
+    "この画像で、机、画面、手、紙、キーボード、ケーブル、明るさ、色、動きなど、確実に見えるものを1つだけ、日本語8〜40字で述べて。"
+    "悪い例: ユーザーはペケ子になりきるよう求めている。"
+    "悪い例: キャラクター設定はX68000から生まれたロボット。"
+    "悪い例: 画像を解析すると物体があります。"
+    "悪い例: 何かがある。"
+    "悪い例: そこに気配がある。"
+    "良い例: 机の上にキーボードがある。"
+    "良い例: 手元が少し動いている。"
+    "良い例: 明るい画面が見える。"
+    "良い例: 黒いケーブルが机にある。"
+    "良い例: 右側が少し暗い。"
+)
+
+_VISION_BAD_TERMS = (
+    "画像",
+    "写真",
+    "静止画",
+    "カメラ",
+    "フレーム",
+    "検出",
+    "解析",
+    "物体",
+    "推論",
+    "AI",
+    "ユーザー",
+    "ペケ子",
+    "ぺけ子",
+    "キャラクター",
+    "ペルソナ",
+    "プロンプト",
+    "指示",
+    "制約",
+    "設定",
+    "名前",
+    "視点",
+    "応答",
+    "生成",
+    "X68000",
+    "ロボット",
+    "なりき",
+    "微笑",
+    "語る",
+    "心躍",
+)
+
+_VISION_GENERIC_FRAGMENTS = (
+    "何か見えた",
+    "何かが見えた",
+    "何かを見つけた",
+    "目の前の様子",
+    "気づいた感じ",
+    "見えている",
+    "見えます",
+    "何かがある",
+    "何かある",
+    "なんだか存在感",
+    "存在感",
+    "気配",
+    "作業中かな",
+    "気になる",
+    "ちゃんと見てた",
+    "見てた",
+    "目の前が少し変わった",
+)
+
+_VISION_FALLBACKS = (
+    "机の明るさ、少し変わったね。",
+    "端のほう、さっきより明るいかも。",
+    "机まわり、少し並びが変わったね。",
+    "近くの影がちょっと動いたよ。",
+    "画面の光、今日は少しまぶしいね。",
+    "手元のあたり、少しにぎやかだね。",
+    "白っぽいところが少し増えたね。",
+    "暗いところがゆっくり動いたよ。",
+    "机の上、さっきより落ち着いたね。",
+    "細かい輪郭が増えた感じだよ。",
+    "明るい面がふっと広がったね。",
+    "端っこの色、少し変わったみたい。",
+)
+
+_VISION_MOTION_FALLBACKS = (
+    "手元の動き、今ちょっと見えたよ。",
+    "影がすっと横に流れたね。",
+    "机の端で小さく動いたよ。",
+    "明るいところが一瞬ゆれたね。",
+    "画面の前、少し動きがあったよ。",
+    "輪郭がさっと変わった感じだよ。",
+    "手元が少し忙しそうだね。",
+    "端のほうがすっと動いたよ。",
+)
+
+_VISION_TONES = (
+    "見えた名詞をそのまま拾う",
+    "明るさの変化に触れる",
+    "配置の変化に触れる",
+    "動きを短く受け止める",
+    "作業中の相手を邪魔しない",
+    "少しだけいたずらっぽい",
+)
 
 
 class VisionWatcher:
@@ -39,6 +152,8 @@ class VisionWatcher:
         self._last_spoken_at = 0.0
         self._last_spoken_monotonic = 0.0
         self._last_text = ""
+        self._recent_texts = deque(maxlen=8)
+        self._vision_turn = 0
         self._last_error = ""
         self._motion_score = 0.0
         self._dropped = 0
@@ -260,13 +375,22 @@ class VisionWatcher:
             return
 
         try:
-            text = await self._describe_frame(cv2, frame, jpeg, score)
-            text = self.limit_text(text.strip() or "いま、目の前の様子が少し変わった気がする。")
+            raw_text = await self._describe_frame(cv2, frame, jpeg, score)
+            observation = self._clean_vision_text(raw_text)
+            if not observation and cv2 is not None and frame is not None:
+                observation = self._clean_vision_text(self._local_scene_hint(cv2, frame))
+            if observation:
+                styled = await self._style_observation(observation)
+                text = self._clean_vision_text(styled) or observation
+            else:
+                text = self._fallback_reaction(score)
+            text = self.limit_text(text)
             utterance = await asyncio.to_thread(self.make_utterance, text, "vision")
             if not reservation.commit(utterance):
                 self._dropped += 1
                 return
             self._last_text = text
+            self._remember_vision_text(text)
             self._last_spoken_at = time.time()
             self._last_spoken_monotonic = time.monotonic()
         except Exception as exc:
@@ -280,6 +404,100 @@ class VisionWatcher:
         if not ok:
             raise RuntimeError("JPEG encode failed")
         return bytes(encoded)
+
+    def _clean_vision_text(self, text: str) -> str:
+        text = str(text or "").strip()
+        if not text:
+            return ""
+
+        text = text.replace("\r", "\n")
+        text = re.sub(r"```(?:[a-zA-Z0-9_-]+)?", "", text)
+        text = text.replace("```", "")
+        text = re.sub(
+            r"^\s*(?:[-*・]\s*)?(?:ペケ子|回答|返答|一言|セリフ|発話)\s*[:：]\s*",
+            "",
+            text,
+        )
+        text = text.strip("「」『』\"'` \t\n")
+        text = re.sub(r"\s+", " ", text)
+
+        candidates = re.findall(r"[^。！？!?\n]+[。！？!?]?", text)
+        if not candidates:
+            candidates = [text.split("\n", 1)[0]]
+
+        for candidate in candidates:
+            candidate = candidate.strip("「」『』\"'` \t\n")
+            if not candidate:
+                continue
+            if candidate[-1] not in "。！？!?":
+                candidate = f"{candidate}。"
+            if any(term in candidate for term in _VISION_BAD_TERMS):
+                continue
+            if any(fragment in candidate for fragment in _VISION_GENERIC_FRAGMENTS):
+                continue
+            if self._is_recent_vision_text(candidate):
+                continue
+            return candidate
+        return ""
+
+    def _fallback_reaction(self, score: float | None) -> str:
+        options = list(_VISION_FALLBACKS)
+        if score is not None and score >= max(settings.VISION_MOTION_THRESHOLD, 0.03):
+            options = list(_VISION_MOTION_FALLBACKS)
+
+        start = (self._vision_turn + int(time.time() // 7)) % len(options)
+        for offset in range(len(options)):
+            candidate = options[(start + offset) % len(options)]
+            if not self._is_recent_vision_text(candidate):
+                return candidate
+        return options[start]
+
+    def _remember_vision_text(self, text: str) -> None:
+        normalized = self._normalize_vision_text(text)
+        if normalized:
+            self._recent_texts.append(normalized)
+        self._vision_turn += 1
+
+    def _is_recent_vision_text(self, text: str) -> bool:
+        normalized = self._normalize_vision_text(text)
+        if not normalized:
+            return False
+        if normalized == self._normalize_vision_text(self._last_text):
+            return True
+        return normalized in self._recent_texts
+
+    @staticmethod
+    def _normalize_vision_text(text: str) -> str:
+        text = str(text or "")
+        text = re.sub(r"[。！？!?、,. \t\r\n「」『』\"'`]", "", text)
+        return text
+
+    def _vision_user_prompt(self) -> str:
+        return _VISION_USER_PROMPT
+
+    async def _style_observation(self, observation: str) -> str:
+        tone = _VISION_TONES[self._vision_turn % len(_VISION_TONES)]
+        prompt = (
+            "以下の観察だけを材料に、ペケ子の自然な一言へ直して。"
+            "観察にないものは足さない。"
+            "必ず観察中の名詞を1つ残す。"
+            "画像、写真、カメラ、検出、解析、物体とは言わない。"
+            "「何か」「気配」「存在感」「気になる」だけで終えない。"
+            "日本語14〜38字の一文だけ。"
+            "見えたものに対して軽く反応する。"
+            "質問で終えすぎない。"
+            f"今回の口調: {tone}。"
+            f"{self._recent_text_prompt()}"
+            f"観察: {observation}"
+        )
+        return await asyncio.to_thread(self.llm.chat, settings.VISION_SID, prompt)
+
+    def _recent_text_prompt(self) -> str:
+        recent = [text for text in list(self._recent_texts)[-4:] if text]
+        if not recent:
+            return "直近と似た定型文にしない。"
+        joined = "、".join(recent)
+        return f"直近のセリフと同じ言い回しは禁止: {joined}。"
 
     async def _describe_frame(self, cv2, frame, jpeg: bytes, score: float | None) -> str:
         vision_model = self._vision_model()
@@ -295,24 +513,32 @@ class VisionWatcher:
         if settings.VISION_MODE == "snapshot":
             if cv2 is None or frame is None:
                 prompt = (
-                    "カメラで静止画を1枚見たよ。"
-                    "画像モデルの説明は取れなかった。"
-                    "ペケ子として、目の前に何かを見つけた感じで日本語20〜45字で一言だけ反応して。"
+                    "明るさか配置が少し変わった。"
+                    "ペケ子の自然な話し言葉で短く反応して。"
+                    "具体物がない時は、明るさや配置の変化だけに触れる。"
+                    "「何か」「気配」だけで終えない。"
+                    "日本語14〜38字の一文だけ。画像、写真、カメラ、解析とは言わない。"
+                    f"{self._recent_text_prompt()}"
                 )
                 return await asyncio.to_thread(self.llm.chat, settings.VISION_SID, prompt)
 
             hint = self._local_scene_hint(cv2, frame)
             prompt = (
-                "カメラで静止画を1枚見たよ。"
-                f"軽量解析では「{hint}」に見える。"
-                "ペケ子として、目の前の様子に気づいた感じで日本語20〜45字で一言だけ反応して。"
+                "見た目のヒントだけを使って、ペケ子の自然な話し言葉で短く反応して。"
+                f"見た目のヒント: {hint}。"
+                "明るさ、色、輪郭のうち1つを拾う。"
+                "日本語14〜38字の一文だけ。画像、写真、カメラ、解析とは言わない。"
+                f"{self._recent_text_prompt()}"
             )
             return await asyncio.to_thread(self.llm.chat, settings.VISION_SID, prompt)
 
         prompt = (
-            "カメラの前で何かが動いたよ。"
-            "ペケ子として、見えたものに気づいた感じで日本語20〜45字で一言だけ反応して。"
-            f"動きの大きさは{(score or 0.0):.2%}くらい。"
+            "目の前で少し動きがあった。"
+            "ペケ子の自然な話し言葉で、動きに短く反応して。"
+            "手元、影、明るさなど動いた部分を1つ入れる。"
+            "日本語14〜38字の一文だけ。画像、写真、カメラ、数値とは言わない。"
+            f"動きの強さの参考: {(score or 0.0):.2%}。"
+            f"{self._recent_text_prompt()}"
         )
         return await asyncio.to_thread(self.llm.chat, settings.VISION_SID, prompt)
 
@@ -370,19 +596,15 @@ class VisionWatcher:
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "あなたは小さなロボットのペケ子です。"
-                        "カメラ画像で目立つ物体や動きを1つだけ選び、"
-                        "親しみのある日本語で短く話します。"
-                    ),
+                    "content": _VISION_SYSTEM_PROMPT,
                 },
                 {
                     "role": "user",
-                    "content": "画像を見て、何に気づいたか20〜45字で一言だけ返して。",
+                    "content": self._vision_user_prompt(),
                     "images": [image_b64],
                 },
             ],
-            "options": {"temperature": 0.7, "num_predict": 80},
+            "options": {"temperature": 0.6, "num_predict": 64},
         }
         async with httpx.AsyncClient(timeout=settings.VISION_OLLAMA_TIMEOUT_S) as client:
             host = self._vision_host()
@@ -396,24 +618,19 @@ class VisionWatcher:
         payload = {
             "model": settings.VISION_OPENAI_MODEL,
             "stream": False,
-            "temperature": 0.7,
-            "max_tokens": 80,
+            "temperature": 0.6,
+            "max_tokens": 64,
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "あなたは小さなロボットのペケ子です。"
-                        "カメラ画像で目立つ物体を1つだけ選び、"
-                        "親しみのある日本語で短く話します。"
-                        "推論過程や説明は書かず、最終回答の一文だけ返します。"
-                    ),
+                    "content": _VISION_SYSTEM_PROMPT,
                 },
                 {
                     "role": "user",
                     "content": [
                         {
                             "type": "text",
-                            "text": "画像を見て、何に気づいたか20〜45字で一言だけ返して。推論過程は不要です。",
+                            "text": self._vision_user_prompt(),
                         },
                         {
                             "type": "image_url",
@@ -443,12 +660,6 @@ class VisionWatcher:
         message = choices[0].get("message") or {}
         content = str(message.get("content", "") or "").strip()
         if not content and message.get("reasoning_content"):
-            reasoning = str(message.get("reasoning_content") or "").strip()
-            prompt = (
-                "以下は画像モデルから得た観察メモです。"
-                "推論過程には触れず、見えたものへのペケ子の反応だけを"
-                "日本語20〜45字の一文で返して。\n"
-                f"観察メモ: {reasoning[:800]}"
-            )
-            return await asyncio.to_thread(self.llm.chat, settings.VISION_SID, prompt)
+            log.info("Vision model returned reasoning_content without visible content; ignoring it")
+            return ""
         return content

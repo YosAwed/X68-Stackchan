@@ -133,6 +133,28 @@ def _time_of_day_hint(now: datetime | None = None) -> str:
             return f"[気分のヒント: {flavor}]"
     return ""
 
+
+def _recent_reply_hint(history_snapshot: list[tuple[str, str]]) -> str:
+    replies: list[str] = []
+    for role, content in history_snapshot:
+        if role != "assistant":
+            continue
+        normalized = " ".join(str(content or "").split())
+        if normalized and normalized not in replies:
+            replies.append(normalized)
+
+    replies = replies[-3:]
+    if not replies:
+        return ""
+
+    joined = " / ".join(replies)
+    return (
+        "[返答のヒント: 直近と同じ文や同じ慰め方を避ける。"
+        "ユーザー発話の具体語を一つ拾って返す。"
+        f"直近の返答: {joined}]"
+    )
+
+
 log = logging.getLogger(__name__)
 
 
@@ -200,6 +222,9 @@ class LLM:
             flavor = _time_of_day_hint()
             if flavor:
                 messages.append({"role": "system", "content": flavor})
+        reply_hint = _recent_reply_hint(history_snapshot)
+        if reply_hint:
+            messages.append({"role": "system", "content": reply_hint})
         for role, content in history_snapshot:
             messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": user_text})
