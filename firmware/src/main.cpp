@@ -969,26 +969,7 @@ void loop() {
             break;
     }
 
-    // 電源管理: 低電池チェック / クリティカル停止 / idle deep sleep
-    g_pwr.poll();
-    if (g_pwr.shouldSleep(g_state)) {
-        g_face.show(faces::FACE_IDLE_LONG);
-        delay(500);
-        g_pwr.enterDeepSleep();
-    }
-
-#if SERVO_ENABLED
-    if (g_state != State::Sleep && !g_pwr.batteryLow()) {
-        g_servo.update();
-    }
-#endif
-#if RGB_ENABLED
-    if (g_state != State::Headpat) {
-        g_rgb.update();
-    }
-#endif
-
-    // 電源管理: 低電池 (≤5%) は即 powerOff
+    // 電源管理: 低電池 (≤5%) は即 powerOff。Idle は段階顔を経て deep sleep。
     g_pwr.poll();
 
     // Idle 段階化: 3 分 退屈 / 4 分 あくび / 5 分 Zzz → deep sleep
@@ -1007,6 +988,17 @@ void loop() {
         g_pwr.enterDeepSleep();
         // ここには戻ってこない (復帰時はリセット → setup() 再走)
     }
+
+#if SERVO_ENABLED
+    if (g_state != State::Sleep && !g_pwr.batteryLow()) {
+        g_servo.update();
+    }
+#endif
+#if RGB_ENABLED
+    if (g_state != State::Headpat) {
+        g_rgb.update();
+    }
+#endif
 
     // 顔アニメ tick (Idle 中の自動瞬き)。FACE_IDLE 以外の表情中は休止する。
     g_face.tick();
