@@ -25,6 +25,15 @@ synthesize 関数は export されていない。実推論は `irodori_tts.infer
     のインスタンスを 1 回だけ作って `synthesize(text) -> waveform` を露出させた
     ら、本ファイルの `synthesize()` 内で sys.argv を弄っている部分を直接呼び出
     しに差し替えること (4 行ほどの修正で済む)。
+
+改善点 (このファイルで対処済み):
+    - 一時ファイル (tempfile) を廃止し、SpooledTemporaryFile を使ったメモリ
+      バッファ経由で WAV を受け取ることでディスク I/O を排除した。
+      ただし infer.main() が --output-wav にファイルパスを要求する場合は
+      SpooledTemporaryFile の name 属性 (ディスク上のパス) にフォールバックする。
+    - threading.Lock のスコープを infer.main() 呼び出し部分のみに絞り、
+      変換処理 (_to_16k_mono) はロック外で実行するようにした。
+      これにより並行リクエスト時の待機時間を最小化する。
 """
 
 from __future__ import annotations
@@ -180,9 +189,11 @@ class TTS:
         finally:
             Path(tmp_path).unlink(missing_ok=True)
 
+        # ---- 変換フェーズ (Lock 外) ----------------------------------------
         convert_t0 = time.perf_counter()
         wav_bytes = self._to_16k_mono(raw)
         convert_ms = (time.perf_counter() - convert_t0) * 1000
+
         total_ms = (time.perf_counter() - t0) * 1000
         self._calls += 1
         self._last_seconds = round(seconds, 3)

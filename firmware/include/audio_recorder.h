@@ -55,6 +55,8 @@ public:
         // 直前 record() で埋まったぶんを確定 (初回は last_bytes_ == 0)
         if (last_bytes_ > 0) {
             if (write_pos_ + last_bytes_ > cap_) {
+                // バッファ上限到達: 上限フラグを立てて停止
+                // 呼び出し元 (main.cpp) は isFull() で検知して状態遷移する
                 overflow_stopped_ = true;
                 stop();
                 return;
@@ -89,9 +91,13 @@ public:
     const uint8_t* data() const { return buf_; }
     size_t         size() const { return write_pos_; }
     bool isRecording() const    { return recording_; }
-    bool isFull() const         { return overflow_stopped_; }
     uint16_t lastPeak() const   { return last_peak_; }
     uint16_t lastRms() const    { return last_rms_; }
+
+    // MAX_REC_SECONDS に達して自動停止したかどうかを返す。
+    // main.cpp の loop() でボタン離し判定と並列にチェックし、
+    // 上限到達時も確実に Thinking 状態へ遷移させるために使う。
+    bool isFull() const { return overflow_stopped_; }
 
 private:
     void updateLevel(const int16_t* samples, size_t count) {
@@ -143,7 +149,7 @@ private:
     size_t   cap_              = 0;
     size_t   write_pos_        = 44; // 先頭 44byte はヘッダ予約
     bool     recording_        = false;
-    bool     overflow_stopped_ = false;
+    bool     overflow_stopped_ = false; // バッファ上限到達フラグ
     int16_t  chunk_[512]       = {};
     size_t   last_bytes_       = 0;
     uint16_t last_peak_        = 0;

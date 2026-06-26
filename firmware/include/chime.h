@@ -116,7 +116,7 @@ inline void playErrorBeep() {
 inline void playOverflowBeep() {
     static const detail::Note kOverflow[] = {
         { 880.0f, 60 },    // A5
-        { 880.0f, 60 },    // A5
+        { 880.0f, 60 },    // A5 (ダブルパルス)
     };
     detail::playSequence(kOverflow, 2, /*vol=*/130);
 }

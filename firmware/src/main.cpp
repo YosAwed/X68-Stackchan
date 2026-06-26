@@ -538,6 +538,33 @@ static void handleHttpError(int status) {
     delay(1500);
 }
 
+// HTTP エラーをステータスコード別に表情・ビープで通知する
+// 0 はタイムアウト (connect 失敗 / 受信不完全) を表す
+static void handleHttpError(int status) {
+    if (status == 0) {
+        // 接続失敗またはタイムアウト
+        Serial.printf("[ERR ] HTTP timeout / connect failed\n");
+        setState(State::Error, faces::FACE_ERR_TIMEOUT);
+        playErrorBeep();
+    } else if (status == 413) {
+        // 録音が長すぎてサーバに弾かれた
+        Serial.printf("[ERR ] HTTP 413: audio too large (shorten MAX_REC_SECONDS)\n");
+        setState(State::Error, faces::FACE_ERR_TOO_LARGE);
+        playTooLargeBeep();
+    } else if (status >= 500) {
+        // サーバ内部エラー (STT/LLM/TTS いずれかの失敗)
+        Serial.printf("[ERR ] HTTP %d: server error\n", status);
+        setState(State::Error, faces::FACE_ERR_SERVER);
+        playServerErrorBeep();
+    } else {
+        // その他 (4xx など)
+        Serial.printf("[ERR ] HTTP %d\n", status);
+        setState(State::Error, faces::FACE_ERR_HTTP);
+        playErrorBeep();
+    }
+    delay(1500);
+}
+
 void setup() {
     auto cfg = M5.config();
     M5.begin(cfg);
