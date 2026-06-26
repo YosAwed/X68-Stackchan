@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     # ---- TTS backend selection ----
     # irodori  = CUDA in-process (Irodori-TTS-Lite)
     # voicevox = HTTP (Mac mini etc.)
+    # macsay   = macOS built-in say + afconvert (local smoke-test backend)
     TTS_BACKEND: str = "irodori"
 
     # ---- Whisper (STT) ----
@@ -60,6 +61,10 @@ class Settings(BaseSettings):
     # ---- VOICEVOX (when TTS_BACKEND=voicevox) ----
     VOICEVOX_HOST: str = "http://127.0.0.1:50021"
     VOICEVOX_SPEAKER: int = 3
+
+    # ---- macOS say (when TTS_BACKEND=macsay) ----
+    MACSAY_VOICE: str = "Kyoko"
+    MACSAY_RATE: int = Field(default=185, gt=0)
 
     # ---- Server / HTTP ----
     SERVER_HOST: str = "0.0.0.0"
