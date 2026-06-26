@@ -17,6 +17,8 @@ server/tts_cache/
 server/vision_latest.jpg
 
 # Python
+.venv/
+.pytest_cache/
 __pycache__/
 *.pyc
 

@@ -84,6 +84,14 @@ public:
         }
     }
 
+    void refresh() {
+        const int n = current_;
+        current_ = 0;
+        show(n);
+    }
+
+    void invalidate() { current_ = 0; }
+
 private:
     void showInternal(int n, bool force) {
         if (n < 1 || n > 36) return;
@@ -109,14 +117,6 @@ private:
             ? (blink_max_ms_ - blink_min_ms_) : 1;
         next_blink_at_ms_ = now + blink_min_ms_ + (uint32_t)(rand() % span);
     }
-
-    void refresh() {
-        const int n = current_;
-        current_ = 0;
-        show(n);
-    }
-
-    void invalidate() { current_ = 0; }
 
 private:
     int      current_ = 0;
