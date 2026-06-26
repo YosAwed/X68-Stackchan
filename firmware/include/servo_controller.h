@@ -62,8 +62,11 @@ public:
     // ---- 補間 / 送信設定 -----------------------------------
     static constexpr float    LERP_FAST = 0.10f;
     static constexpr float    LERP_SLOW = 0.05f;
+    static constexpr float    LERP_IDLE = 0.018f;
     static constexpr uint32_t SEND_MS   = 50;    // サーボ更新周期 (ms)
     static constexpr uint16_t MOVE_MS   = 80;    // サーボ内部補間時間 (ms)
+    static constexpr uint16_t IDLE_MOVE_OUT_MS  = 750;
+    static constexpr uint16_t IDLE_MOVE_BACK_MS = 950;
     static constexpr uint32_t AUTO_TORQUE_OFF_MS = 300;
 
     // --------------------------------------------------------
@@ -106,10 +109,10 @@ public:
     void goIdle() {
         target_yaw_   = 0.0f;
         target_pitch_ = 0.0f;
-        lerp_speed_   = LERP_SLOW;
+        lerp_speed_   = LERP_IDLE;
         in_idle_      = true;
         last_idle_ms_ = millis();
-        idle_interval_ms_ = idleMotionInterval();
+        idle_interval_ms_ = firstIdleMotionInterval();
     }
 
     void holdStill() {
@@ -235,13 +238,18 @@ public:
             }
         }
 
-        // Idle 時: たまに小さく動き、短時間で中央へ戻る。
+        // Idle 時: 数分に一度、小さく視線を泳がせてから中央へ戻る。
 #if SERVO_IDLE_MOTION_ENABLED
         if (idle_nudge_return_ms_ != 0 && now >= idle_nudge_return_ms_) {
             idle_nudge_return_ms_ = 0;
             target_yaw_   = 0.0f;
             target_pitch_ = 0.0f;
-            lerp_speed_   = LERP_SLOW;
+            current_yaw_  = 0.0f;
+            current_pitch_ = 0.0f;
+            lerp_speed_   = LERP_IDLE;
+            idle_hold_torque_ = false;
+            suppress_auto_torque_until_ms_ = now + IDLE_MOVE_BACK_MS + 250;
+            writeNormalized(0.0f, 0.0f, IDLE_MOVE_BACK_MS);
         }
 #endif
         if (in_idle_ && now - last_idle_ms_ > idle_interval_ms_) {
@@ -249,14 +257,17 @@ public:
             idle_interval_ms_ = idleMotionInterval();
 #if SERVO_IDLE_MOTION_ENABLED
             const int yaw_dir = (rand() & 1) ? 1 : -1;
-            const int yaw_mag = 1 + (rand() % 2);
-            target_yaw_   = (float)(yaw_dir * yaw_mag) * 0.025f;
-            target_pitch_ = (float)(rand() % 3 - 1) * 0.020f;
-            lerp_speed_   = 0.06f;
-            idle_nudge_return_ms_ = now + 1200;
-#if SERVO_IDLE_MOTION_DEBUG
+            const float yaw_mag = 0.12f + (float)(rand() % 4) * 0.020f; // 0.12..0.18
+            target_yaw_   = (float)yaw_dir * yaw_mag;
+            target_pitch_ = 0.0f;
+            current_yaw_  = target_yaw_;
+            current_pitch_ = target_pitch_;
+            lerp_speed_   = LERP_IDLE;
+            idle_hold_torque_ = true;
+            suppress_auto_torque_until_ms_ = now + IDLE_MOVE_OUT_MS + 250;
+            idle_nudge_return_ms_ = now + 3500 + (uint32_t)(rand() % 3000);
+            writeNormalized(target_yaw_, target_pitch_, IDLE_MOVE_OUT_MS);
             Serial.printf("[SRV ] idle nudge yaw=%.3f pitch=%.3f\n", target_yaw_, target_pitch_);
-#endif
 #else
             target_yaw_   = 0.0f;
             target_pitch_ = 0.0f;
@@ -285,11 +296,18 @@ public:
             writePos(ID_PITCH, pp, MOVE_MS);
             last_sent_yaw_pos_   = yp;
             last_sent_pitch_pos_ = pp;
-            torque_release_at_ms_ = target_reached ? now + AUTO_TORQUE_OFF_MS : 0;
+            torque_release_at_ms_ =
+                (target_reached && now >= suppress_auto_torque_until_ms_ && !idle_hold_torque_)
+                ? now + AUTO_TORQUE_OFF_MS
+                : 0;
             return;
         }
 
-        if (target_reached && torque_release_at_ms_ == 0 && torque_enabled_) {
+        if (target_reached &&
+            torque_release_at_ms_ == 0 &&
+            torque_enabled_ &&
+            now >= suppress_auto_torque_until_ms_ &&
+            !idle_hold_torque_) {
             torque_release_at_ms_ = now + AUTO_TORQUE_OFF_MS;
         }
 
@@ -333,18 +351,40 @@ private:
     uint32_t dizzy_start_ms_   = 0;
     uint32_t idle_nudge_return_ms_ = 0;
     uint32_t torque_release_at_ms_ = 0;
+    uint32_t suppress_auto_torque_until_ms_ = 0;
     int      last_sent_yaw_pos_    = -1;
     int      last_sent_pitch_pos_  = -1;
     bool     torque_enabled_       = false;
+    bool     idle_hold_torque_     = false;
     static constexpr uint32_t WAGGLE_DURATION_MS = 1050;  // 3 phases × 350 ms
     static constexpr uint32_t DIZZY_DURATION_MS  = 1400;
 
-    uint32_t idleMotionInterval() const {
+    uint32_t firstIdleMotionInterval() const {
 #if SERVO_IDLE_MOTION_ENABLED
-        return 12000 + (uint32_t)(rand() % 13000);
+        return 15000 + (uint32_t)(rand() % 10000); // Idle 復帰後 15〜25 秒
 #else
         return 3000;
 #endif
+    }
+
+    uint32_t idleMotionInterval() const {
+#if SERVO_IDLE_MOTION_ENABLED
+        return 45000 + (uint32_t)(rand() % 45000); // 45〜90 秒
+#else
+        return 3000;
+#endif
+    }
+
+    void writeNormalized(float yaw, float pitch, uint16_t time_ms) {
+        const int yp = constrain(YAW_CTR + (int)(yaw * YAW_HALF),
+                                 YAW_CTR - YAW_HALF, YAW_CTR + YAW_HALF);
+        const int pp = constrain(PITCH_CTR + (int)(pitch * PITCH_HALF),
+                                 PITCH_CTR - PITCH_HALF, PITCH_CTR + PITCH_HALF);
+        writePos(ID_YAW, yp, time_ms);
+        writePos(ID_PITCH, pp, time_ms);
+        last_sent_yaw_pos_ = yp;
+        last_sent_pitch_pos_ = pp;
+        last_send_ms_ = millis();
     }
 
     void beginServoPower() {

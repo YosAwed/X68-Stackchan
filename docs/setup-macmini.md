@@ -95,6 +95,29 @@ ipconfig getifaddr en0   # 例: 192.168.1.42
 
 [setup.md のセクション 2](setup.md#2-cores3-側のセットアップ) と完全に同じ手順。`SERVER_HOST` を Mac mini の IP に向けるだけ。
 
+### 2-1. Mac から USB 直結で焼く場合
+
+このリポジトリを Mac 上で開いている場合は、PlatformIO の手順をまとめた補助スクリプトが使える。
+
+```bash
+# まずビルドだけ確認
+scripts/mac_stackchan_test.sh --build-only
+
+# CoreS3 を USB-C で接続して、LittleFS + ファームを書き込み、そのままシリアル監視
+scripts/mac_stackchan_test.sh --flash-all
+
+# 書き込み済みでログだけ見たい場合
+scripts/mac_stackchan_test.sh --monitor-only
+```
+
+自動検出できない場合は `/dev/cu.usbmodem...` などのポートを明示する。
+
+```bash
+scripts/mac_stackchan_test.sh --flash-all --port /dev/cu.usbmodemXXXX
+```
+
+`No USB serial device found` が出る場合は、充電専用ではない USB-C ケーブルに替える、CoreS3 を再接続する、または CoreS3 の BOOT を押しながら RESET を押してダウンロードモードに入れてから再実行する。
+
 ## 3. 動作確認
 
 [setup.md のセクション 3](setup.md#3-動作確認-段階的に切り分ける) と同じ。CoreS3 単体 → サーバ疎通 → 会話、の順に切り分けるとよい。

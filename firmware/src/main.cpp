@@ -972,7 +972,7 @@ void loop() {
     // 電源管理: 低電池 (≤5%) は即 powerOff。Idle は段階顔を経て deep sleep。
     g_pwr.poll();
 
-    // Idle 段階化: 3 分 退屈 / 4 分 あくび / 5 分 Zzz → deep sleep
+    // Idle 段階化: 3 分 退屈 / 4 分 あくび / 5 分 Zzz / 30 分 deep sleep
     const auto stage = g_pwr.idleStage(g_state);
     if (stage != g_idle_stage_last) {
         g_idle_stage_last = stage;

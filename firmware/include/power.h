@@ -6,7 +6,7 @@
 //    現状の UART サーボ (SCS0009) は SG90 ほど突入電流問題が無いので
 //    主動的なサーボ抑止はしていないが、将来 SG90 系を併用するときの
 //    フックは残してある)
-//  - Idle が 5 分以上続いたら deep sleep。電源ボタンで復帰 (= リセット)
+//  - Idle が 30 分以上続いたら deep sleep。電源ボタンで復帰 (= リセット)
 //
 //  残量表示はやらない方針なので、状態は serial と動作 (入眠 / 停止)
 //  のみで間接的に分かる。
@@ -62,20 +62,20 @@ public:
     //   Active   : Idle に入ったばかり ( < 3 分)
     //   Bored    : 退屈そう (3 分超)
     //   Yawn     : あくび (4 分超)
-    //   Sleeping : 寝落ち寸前 (5 分超 = deep sleep 直前)
+    //   Sleeping : Zzz 表情 (5 分超、30 分で deep sleep)
     enum class IdleStage { Active, Bored, Yawn, Sleeping };
 
     IdleStage idleStage(State state) const {
         if (state != State::Idle) return IdleStage::Active;
         const uint32_t e = millis() - last_activity_ms_;
-        if (e >= IDLE_SLEEP_MS) return IdleStage::Sleeping;
+        if (e >= IDLE_ZZZ_MS)   return IdleStage::Sleeping;
         if (e >= IDLE_YAWN_MS)  return IdleStage::Yawn;
         if (e >= IDLE_BORED_MS) return IdleStage::Bored;
         return IdleStage::Active;
     }
 
     bool shouldSleep(State state) const {
-        return idleStage(state) == IdleStage::Sleeping;
+        return state == State::Idle && millis() - last_activity_ms_ >= IDLE_SLEEP_MS;
     }
 
     // Zzz 表情を出してから呼ぶこと。戻ってこない (復帰時はリセット → setup() 再走)。
@@ -90,7 +90,8 @@ private:
     static constexpr int      BATT_CRITICAL_PCT = 5;
     static constexpr uint32_t IDLE_BORED_MS     = 3UL * 60 * 1000;  // 3 分: 退屈
     static constexpr uint32_t IDLE_YAWN_MS      = 4UL * 60 * 1000;  // 4 分: あくび
-    static constexpr uint32_t IDLE_SLEEP_MS     = 5UL * 60 * 1000;  // 5 分: deep sleep
+    static constexpr uint32_t IDLE_ZZZ_MS       = 5UL * 60 * 1000;  // 5 分: Zzz 表情
+    static constexpr uint32_t IDLE_SLEEP_MS     = 30UL * 60 * 1000; // 30 分: deep sleep
     static constexpr uint32_t BATT_POLL_MS      = 5000;             // 5 秒ごと
 
     uint32_t last_activity_ms_   = 0;
