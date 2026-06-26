@@ -44,6 +44,7 @@ static PekekoFace     g_face;
 static AudioRecorder  g_rec;
 static PowerManager   g_pwr;
 static State          g_state = State::Boot;
+static PowerManager::IdleStage g_idle_stage_last = PowerManager::IdleStage::Active;
 static bool           g_wait_release_after_auto_send = false;
 static uint32_t       g_listening_start_ms = 0;
 static uint32_t       g_headpat_start_ms = 0;   // Headpat 状態に入った時刻
@@ -563,6 +564,10 @@ void setup() {
     }
     g_face.show(faces::FACE_BOOT_DONE);
 
+    // Idle 中の自動瞬き: 中立顔 (FACE_IDLE) のときだけ 3.5〜6.5 秒間隔で
+    // FACE_IDLE_BLINK を 90ms 挟む
+    g_face.enableAutoBlink(faces::FACE_IDLE, faces::FACE_IDLE_BLINK);
+
 #if SERVO_ENABLED
     if (!g_servo.begin()) {
         Serial.println("[WARN] Servo init failed — check wiring");
@@ -982,6 +987,29 @@ void loop() {
         g_rgb.update();
     }
 #endif
+
+    // 電源管理: 低電池 (≤5%) は即 powerOff
+    g_pwr.poll();
+
+    // Idle 段階化: 3 分 退屈 / 4 分 あくび / 5 分 Zzz → deep sleep
+    const auto stage = g_pwr.idleStage(g_state);
+    if (stage != g_idle_stage_last) {
+        g_idle_stage_last = stage;
+        switch (stage) {
+            case PowerManager::IdleStage::Bored:    g_face.show(faces::FACE_IDLE_BORED); break;
+            case PowerManager::IdleStage::Yawn:     g_face.show(faces::FACE_IDLE_YAWN);  break;
+            case PowerManager::IdleStage::Sleeping: g_face.show(faces::FACE_IDLE_LONG);  break;
+            case PowerManager::IdleStage::Active:   /* 顔は setState 側が管理 */         break;
+        }
+    }
+    if (g_pwr.shouldSleep(g_state)) {
+        delay(500);   // Zzz 顔を見せる余裕
+        g_pwr.enterDeepSleep();
+        // ここには戻ってこない (復帰時はリセット → setup() 再走)
+    }
+
+    // 顔アニメ tick (Idle 中の自動瞬き)。FACE_IDLE 以外の表情中は休止する。
+    g_face.tick();
 
     delay(5);
 }

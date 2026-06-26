@@ -210,6 +210,28 @@ ESP32-S3 がリセット同等の状態で起動するので `setup()` が頭か
 
 サーバ側の会話履歴は `session_id` ベースの deque なので、復帰後も同じ sid で繋げば話の続きから喋れる。
 
+## 電源管理 / バッテリ駆動
+
+CoreS3 SE の内蔵 LiPo (500mAh) で USB-C 抜きでもそのまま動く。PMIC が自動切替。
+[firmware/include/power.h](../firmware/include/power.h) で安全策と省電力を入れてある。
+
+| 条件 | 挙動 |
+|---|---|
+| Battery ≤ 5% | `M5.Power.powerOff()` で即停止 (録音 / HTTP / 再生中でも) |
+| Battery ≤ 15% | `batteryLow()` フラグを立てる。serial に警告ログ。サーボ抑止は将来用に置いてあるだけで、現状の UART SCS0009 では発動しない |
+| Battery > 20% に回復 | 警告解除 (ヒステリシス) |
+| State::Idle が 3 分継続 | `FACE_IDLE_BORED` (退屈顔) に切替 |
+| State::Idle が 4 分継続 | `FACE_IDLE_YAWN` (あくび顔) に切替 |
+| State::Idle が 5 分継続 | `FACE_IDLE_LONG` (Zzz) → `M5.Power.deepSleep()`。**電源ボタンで復帰 (= リセット → setup() 再走)** |
+
+復帰時は Wi-Fi 再接続 (3-5 秒) + サーバの `/ready` 確認 + バイバイ顔 → Idle、というブート手順を頭から走る。サーバ側の会話履歴は `sid` ベースの deque なので、同じ sid なら話の続きから喋れる。
+
+## 顔アニメ (自動瞬き)
+
+[firmware/include/pekeko_face.h](../firmware/include/pekeko_face.h) の `enableAutoBlink()` で、Idle 中 (= `FACE_IDLE` 表示中) のときだけ 3.5〜6.5 秒のランダム間隔で `FACE_IDLE_BLINK` (目閉じ顔) を 90ms だけ挟む。`tick()` を毎ループ呼ぶと作動する。Listening / Thinking / Speaking 等の他の表情中は休止し、Idle に戻った時点から計時し直す。
+
+瞬き顔は `face_map.h` の `FACE_IDLE_BLINK` (デフォルト = `F_LAUGH_EYES_CLOSED`) を書き換えれば差し替え可能。
+
 ## なぜこの分担か
 
 - ESP32-S3 では現実的に小さな LLM すら走らせられない (PSRAM 8MB、Flash 16MB)
