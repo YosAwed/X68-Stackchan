@@ -107,7 +107,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-irodori-
 │   │   ├── pekeko_theme.h     # X68000 風スプラッシュ
 │   │   ├── pekeko_face.h      # LittleFS から face_NN.jpg を描く (drawJpgFile)
 │   │   ├── face_map.h         # シーン→表情番号 (3 段階口パク + emote ペア)
-│   │   └── chime.h            # 起動 / ack / headpat / overflow / 各種エラービープ
+│   │   ├── chime.h            # 起動 / ack / headpat / overflow / 各種エラービープ
+│   │   └── power.h            # 低電池監視 / idle deep sleep
 │   ├── tools/
 │   │   ├── slice.py                # 4 枚のスプライトシートを 36 個に分割 (初回)
 │   │   └── align_face_bottoms.py   # 36 顔の bbox を 2D 中心揃え (位置ズレ修正)
@@ -313,6 +314,7 @@ python -m serial.tools.miniterm COM3 115200
 - [x] 頭頂 Si12T による headpat 反応 + RGB LED 12 個の連動演出 (段階的とろけ顔 + 脈動)
 - [x] 顔 JPG の 2D 中心揃え (`align_face_bottoms.py`) で表情遷移時の位置ズレを解消
 - [x] OFFLINE_MODE: Wi-Fi/サーバ無しで起動して表情アニメ・頭撫で・LED 演出を確認する開発用フラグ
+- [x] 電源管理: 低電池監視と Idle 長時間継続時の deep sleep (`power.h`)
 - [ ] ウェイクワード化 (現状は LCD タッチで push-to-talk)
 - [ ] チャイムを本格的に FM 風にする (M5Unified の波形カスタマイズ or 短い PCM サンプル)
 - [ ] Si12T のスワイプ方向検出 (`wasSwipedForward` / `wasSwipedBackward`) を使った「逆撫で → 困り顔」演出

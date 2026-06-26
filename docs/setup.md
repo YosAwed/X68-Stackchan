@@ -14,6 +14,8 @@
 - Windows 11 + WSL2 (Ubuntu 22.04 以降) + NVIDIA GPU (Ampere 以降, VRAM 12GB 以上推奨。8GB は whisper-small + Irodori + Ollama qwen2.5:7b で結構ギリ)
 - 同一 Wi-Fi LAN (CoreS3 から母艦に IP で届くこと)
 
+> バッテリ駆動の挙動 (低電池サーボ抑止 / 5 分 idle で deep sleep / 電源ボタンで復帰) は [docs/architecture.md#電源--バッテリ駆動](architecture.md#電源--バッテリ駆動) 参照。
+
 ## 1. 母艦 (Windows + WSL2) 側のセットアップ
 
 > [Irodori-TTS-Lite](https://github.com/kizuna-intelligence/Irodori-TTS-Lite) は CUDA + Triton 前提なので WSL2 (Linux) 内で動かす。Windows ネイティブだと Triton が走らない。

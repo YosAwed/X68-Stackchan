@@ -36,11 +36,13 @@
 #include "touch_handler.h"
 #include "imu_handler.h"
 #include "remote_handler.h"
+#include "power.h"
 
 using namespace stackchan;
 
 static PekekoFace     g_face;
 static AudioRecorder  g_rec;
+static PowerManager   g_pwr;
 static State          g_state = State::Boot;
 static bool           g_wait_release_after_auto_send = false;
 static uint32_t       g_listening_start_ms = 0;
@@ -190,6 +192,7 @@ static void setState(State s, int face_id = -1) {
         g_face.show(face_id);
         g_mic_overlay_visible = false;
     }
+    g_pwr.noteActivity();
     clearSideStatus();
     // Idle に入る時にまばたき/マイクロ表情タイマを初期化、Idle 以外に出る時は停止。
     if (s == State::Idle) {
@@ -538,33 +541,6 @@ static void handleHttpError(int status) {
     delay(1500);
 }
 
-// HTTP エラーをステータスコード別に表情・ビープで通知する
-// 0 はタイムアウト (connect 失敗 / 受信不完全) を表す
-static void handleHttpError(int status) {
-    if (status == 0) {
-        // 接続失敗またはタイムアウト
-        Serial.printf("[ERR ] HTTP timeout / connect failed\n");
-        setState(State::Error, faces::FACE_ERR_TIMEOUT);
-        playErrorBeep();
-    } else if (status == 413) {
-        // 録音が長すぎてサーバに弾かれた
-        Serial.printf("[ERR ] HTTP 413: audio too large (shorten MAX_REC_SECONDS)\n");
-        setState(State::Error, faces::FACE_ERR_TOO_LARGE);
-        playTooLargeBeep();
-    } else if (status >= 500) {
-        // サーバ内部エラー (STT/LLM/TTS いずれかの失敗)
-        Serial.printf("[ERR ] HTTP %d: server error\n", status);
-        setState(State::Error, faces::FACE_ERR_SERVER);
-        playServerErrorBeep();
-    } else {
-        // その他 (4xx など)
-        Serial.printf("[ERR ] HTTP %d\n", status);
-        setState(State::Error, faces::FACE_ERR_HTTP);
-        playErrorBeep();
-    }
-    delay(1500);
-}
-
 void setup() {
     auto cfg = M5.config();
     M5.begin(cfg);
@@ -600,6 +576,7 @@ void setup() {
         g_face.show(faces::FACE_ERR_GENERIC);
         return;
     }
+    g_pwr.begin();
 #if defined(OFFLINE_MODE) && OFFLINE_MODE
     Serial.println("[OFFLINE] skipping WiFi & server ready check (kawaii test mode)");
 #else
@@ -858,7 +835,7 @@ void loop() {
                     if (r.emote.length() > 0) {
                         Serial.printf("[EMO ] %s\n", r.emote.c_str());
                     }
-                    g_state = State::Speaking;
+                    setState(State::Speaking);
                     Serial.printf("[PLAY] chat response start bytes=%u\n",
                                   (unsigned)r.body_size);
                     playWavWithLipsync(r.body, r.body_size, r.emote.c_str(), r.bot_text);
@@ -987,8 +964,16 @@ void loop() {
             break;
     }
 
+    // 電源管理: 低電池チェック / クリティカル停止 / idle deep sleep
+    g_pwr.poll();
+    if (g_pwr.shouldSleep(g_state)) {
+        g_face.show(faces::FACE_IDLE_LONG);
+        delay(500);
+        g_pwr.enterDeepSleep();
+    }
+
 #if SERVO_ENABLED
-    if (g_state != State::Sleep) {
+    if (g_state != State::Sleep && !g_pwr.batteryLow()) {
         g_servo.update();
     }
 #endif
