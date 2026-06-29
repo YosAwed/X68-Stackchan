@@ -324,6 +324,28 @@ def test_vision_status_when_disabled(client):
     assert body["camera_index"] == 0
 
 
+def test_vision_capture_returns_wav(client, app_with_fakes, monkeypatch):
+    from utterance_queue import Utterance
+    from vision_watcher import VisionWatcher
+
+    async def fake_capture_once(self, source="vision:manual"):
+        return Utterance(
+            wav=b"RIFF\x00\x00\x00\x00WAVEvision",
+            bot_text="机の上にキーボードがある。",
+            source=source,
+            emote="neutral",
+        )
+
+    monkeypatch.setattr(VisionWatcher, "capture_once", fake_capture_once)
+
+    r = client.post("/vision/capture")
+
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("audio/wav")
+    assert unquote(r.headers["x-stackchan-bot-text"]) == "机の上にキーボードがある。"
+    assert r.content.startswith(b"RIFF")
+
+
 # ---------------- /admin ----------------
 
 

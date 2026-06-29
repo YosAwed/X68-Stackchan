@@ -162,6 +162,11 @@ static inline void updateIdleStatus() {
 // 定期発話 / 外部 push をサーバから取りに行く間隔 (Idle 中のみ)
 constexpr uint32_t PULL_INTERVAL_MS = 30000;
 
+// リモコン A: 1回押しは PTT、ダブルクリックは vision capture。
+constexpr uint32_t REMOTE_DOUBLE_CLICK_MS = 350;
+static bool     g_remote_a_pending_single = false;
+static uint32_t g_remote_a_first_click_ms = 0;
+
 // 一時リアクション (シェイク / 持ち上げ) の表示保持。終了時刻まで Idle の
 // まばたき・マイクロ表情・pull を抑止し、表示が即上書きされないようにする。
 static uint32_t g_reaction_end_ms = 0;
@@ -181,6 +186,29 @@ static inline void flashIdleMicroRgb() {
 #if RGB_ENABLED
     g_rgb.flashMicroExpression();
 #endif
+}
+
+static void updateRemoteAButton(bool edge, bool& single_click, bool& double_click) {
+    single_click = false;
+    double_click = false;
+    const uint32_t now = millis();
+
+    if (edge) {
+        if (g_remote_a_pending_single &&
+            now - g_remote_a_first_click_ms <= REMOTE_DOUBLE_CLICK_MS) {
+            g_remote_a_pending_single = false;
+            double_click = true;
+            return;
+        }
+        g_remote_a_pending_single = true;
+        g_remote_a_first_click_ms = now;
+    }
+
+    if (g_remote_a_pending_single &&
+        now - g_remote_a_first_click_ms > REMOTE_DOUBLE_CLICK_MS) {
+        g_remote_a_pending_single = false;
+        single_click = true;
+    }
 }
 
 static void clearSideStatus() {
@@ -623,7 +651,10 @@ void loop() {
         const auto t = M5.Touch.getDetail(0);
         pressed = t.isPressed();
     }
-    const bool remote_ptt_edge = g_remote.btnAEdge();  // 毎フレーム呼ぶ (エッジ追跡)
+    const bool remote_a_edge = g_remote.btnAEdge();  // 毎フレーム呼ぶ (エッジ追跡)
+    bool remote_ptt_edge = false;
+    bool remote_vision_edge = false;
+    updateRemoteAButton(remote_a_edge, remote_ptt_edge, remote_vision_edge);
 
 #if defined(OFFLINE_MODE) && OFFLINE_MODE
     {
@@ -740,6 +771,51 @@ void loop() {
                 }
             }
 #endif
+            // リモコン BtnA ダブルクリック: 母艦の内蔵カメラで静止画を撮って vision 応答
+            if (remote_vision_edge && !g_wait_release_after_auto_send) {
+                Serial.println("[VISION] capture requested by remote double-click");
+                g_wait_release_after_auto_send = true;
+#if RGB_ENABLED
+                g_rgb.setScene(RgbScene::Thinking);
+#endif
+                setState(State::Thinking, faces::FACE_THINKING);
+#if defined(OFFLINE_MODE) && OFFLINE_MODE
+                Serial.println("[OFFLINE] would POST /vision/capture");
+                delay(800);
+                playAckBeep();
+#else
+                ensureWiFiConnected();
+                const uint32_t t_send_start = millis();
+                ChatResponse r = ChatClient::captureVision();
+                Serial.printf("[TIME] vision_http;dur=%u wav_out=%u\n",
+                              (unsigned)(millis() - t_send_start),
+                              (unsigned)r.body_size);
+                if (r.ok) {
+                    Serial.printf("[BOT ] %s\n", r.bot_text.c_str());
+                    if (r.timing.length() > 0) {
+                        Serial.printf("[TIME] %s\n", r.timing.c_str());
+                    }
+                    if (r.tts_backend.length() > 0) {
+                        Serial.printf("[TTS ] %s\n", r.tts_backend.c_str());
+                    }
+                    if (r.emote.length() > 0) {
+                        Serial.printf("[EMO ] %s\n", r.emote.c_str());
+                    }
+                    setState(State::Speaking);
+                    playAckBeep();
+                    playWavWithLipsync(r.body, r.body_size, r.emote.c_str(), r.bot_text);
+                    free(r.body);
+                } else {
+                    Serial.printf("[HTTP] /vision/capture failed status=%d body=%u\n",
+                                  r.http_status,
+                                  (unsigned)r.body_size);
+                    handleHttpError(r.http_status);
+                }
+#endif
+                setState(State::Idle, faces::FACE_IDLE);
+                break;
+            }
+
             // LCD タッチ または リモコン BtnA で録音開始
             if ((pressed || remote_ptt_edge) && !g_wait_release_after_auto_send) {
                 Serial.printf("[PTT ] start source=%s\n",

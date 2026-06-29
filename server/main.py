@@ -500,6 +500,30 @@ def vision_status():
     return _vision.status()
 
 
+@app.post("/vision/capture")
+async def vision_capture():
+    """Capture one camera still now and return the spoken response as WAV."""
+    total_t0 = time.perf_counter()
+    watcher = _vision or VisionWatcher(
+        llm=llm,
+        queue=queue,
+        make_utterance=_queued_utterance,
+        limit_text=_limit_spoken_text,
+    )
+    try:
+        utterance = await watcher.capture_once()
+    except Exception as e:
+        log.exception("Vision capture failed")
+        return JSONResponse(status_code=500, content={"error": f"vision: {e}"})
+    return _wav_response(
+        utterance.wav,
+        user_text=None,
+        bot_text=utterance.bot_text,
+        emote=utterance.emote,
+        timings={"vision": _elapsed_ms(total_t0)},
+    )
+
+
 # ---- 簡易管理画面 -----------------------------------------------------------
 # /admin を開くと /ready /scheduler/status /vision/status をブラウザから見れる。
 # /enqueue を叩くフォームつき。送信時は ENQUEUE_TOKEN と同じ値を入力する。

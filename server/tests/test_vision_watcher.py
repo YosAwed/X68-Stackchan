@@ -98,6 +98,41 @@ def test_vision_user_prompt_requests_observation_only():
 
     prompt = watcher._vision_user_prompt()
 
-    assert "確実に見えるもの" in prompt
-    assert "ユーザーはペケ子になりきる" in prompt
+    assert "one clearly visible thing" in prompt
+    assert "Do not mention image" in prompt
     assert "端っこの明るささっきと違うね" not in prompt
+
+
+def test_clean_styled_text_rejects_third_person_description():
+    watcher = _watcher()
+
+    assert watcher._clean_styled_text("その人は何か心地良い雰囲気を感じているようだ。") == ""
+    assert watcher._clean_styled_text("うーん、少し考えを整理したいな。") == "うーん、少し考えを整理したいな。"
+    assert (
+        watcher._clean_styled_text(
+            "うーん、ちょっと手伝って。",
+            "A man with glasses looking at something above his head.",
+        )
+        == ""
+    )
+    assert (
+        watcher._clean_styled_text(
+            "上のほう、少し確認しておきたいな。",
+            "A man with glasses looking at something above his head.",
+        )
+        == "上のほう、少し確認しておきたいな。"
+    )
+
+
+def test_thought_fallback_keeps_visible_anchor():
+    watcher = _watcher()
+
+    assert "端末" in watcher._thought_fallback("A man holding a black device.", None)
+    assert "上" in watcher._thought_fallback(
+        "A man with glasses looking at something above his head.", None
+    )
+    assert "考え" in watcher._thought_fallback(
+        "A man with glasses is resting his chin in his hand.", None
+    )
+    assert "ストラップ" in watcher._thought_fallback("A blue lanyard around his neck.", None)
+    assert "明る" in watcher._thought_fallback("ほどよい明るさ、黄色っぽい、細かい輪郭が多い。", None)

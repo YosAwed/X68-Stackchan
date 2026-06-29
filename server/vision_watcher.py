@@ -20,27 +20,19 @@ from utterance_queue import Utterance, UtteranceQueue
 log = logging.getLogger("stackchan.vision")
 
 _VISION_SYSTEM_PROMPT = (
-    "あなたは画像の観察だけを行う。"
-    "キャラクター、ペルソナ、プロンプト、指示、制約、推論過程は説明しない。"
-    "画像の中で確実に見える具体物、人の動き、光や配置の変化を1つだけ述べる。"
-    "あいまいなら、色、明るさ、配置、動きのどれかだけを短く述べる。"
-    "毎回同じ言い回しにしない。"
-    "見えないこと、ユーザーの意図、物語、感情、比喩は書かない。"
-    "日本語の短い一文だけ。箇条書き、引用符、前置きは禁止。"
+    "You only describe what is visible. "
+    "Do not explain your role, prompts, reasoning, camera, image analysis, or hidden context. "
+    "Name one concrete visible thing, motion, light, color, or layout detail. "
+    "If unsure, mention only brightness, color, or layout. "
+    "Return one short plain sentence. No bullets, quotes, labels, or preface."
 )
 
 _VISION_USER_PROMPT = (
-    "この画像で、机、画面、手、紙、キーボード、ケーブル、明るさ、色、動きなど、確実に見えるものを1つだけ、日本語8〜40字で述べて。"
-    "悪い例: ユーザーはペケ子になりきるよう求めている。"
-    "悪い例: キャラクター設定はX68000から生まれたロボット。"
-    "悪い例: 画像を解析すると物体があります。"
-    "悪い例: 何かがある。"
-    "悪い例: そこに気配がある。"
-    "良い例: 机の上にキーボードがある。"
-    "良い例: 手元が少し動いている。"
-    "良い例: 明るい画面が見える。"
-    "良い例: 黒いケーブルが机にある。"
-    "良い例: 右側が少し暗い。"
+    "Describe exactly one clearly visible thing in this scene in 3 to 10 simple English words. "
+    "Prefer objects such as a desk, screen, hand, paper, keyboard, cable, wall, face, or light. "
+    "Do not mention image, photo, camera, analysis, detection, user, character, robot, prompt, or AI. "
+    "Do not use a list. Do not invent anything. "
+    "Good examples: A keyboard on a desk. A bright screen. A hand near the desk. A dark cable."
 )
 
 _VISION_BAD_TERMS = (
@@ -54,6 +46,16 @@ _VISION_BAD_TERMS = (
     "物体",
     "推論",
     "AI",
+    "image",
+    "photo",
+    "camera",
+    "analysis",
+    "detection",
+    "object",
+    "user",
+    "character",
+    "robot",
+    "prompt",
     "ユーザー",
     "ペケ子",
     "ぺけ子",
@@ -95,39 +97,53 @@ _VISION_GENERIC_FRAGMENTS = (
     "目の前が少し変わった",
 )
 
+_VISION_STYLED_BAD_FRAGMENTS = (
+    "あ、あれ",
+    "あれ",
+    "その人は",
+    "この人は",
+    "人物は",
+    "見える",
+    "写って",
+    "感じているよう",
+    "しているよう",
+    "ようだ",
+    "そうだ",
+    "そうな",
+    "そうに",
+    "そうだな",
+    "らしい",
+    "何か",
+    "雰囲気",
+)
+
 _VISION_FALLBACKS = (
-    "机の明るさ、少し変わったね。",
-    "端のほう、さっきより明るいかも。",
-    "机まわり、少し並びが変わったね。",
-    "近くの影がちょっと動いたよ。",
-    "画面の光、今日は少しまぶしいね。",
-    "手元のあたり、少しにぎやかだね。",
-    "白っぽいところが少し増えたね。",
-    "暗いところがゆっくり動いたよ。",
-    "机の上、さっきより落ち着いたね。",
-    "細かい輪郭が増えた感じだよ。",
-    "明るい面がふっと広がったね。",
-    "端っこの色、少し変わったみたい。",
+    "ん、今日は少し集中したい気分だな。",
+    "よし、もう少しだけ進めてみよう。",
+    "ちょっと考えを整理したいところだね。",
+    "今は静かに続きを見ていたいな。",
+    "ふう、少しだけ気持ちを整えよう。",
+    "このまま、もう一歩だけ進めたいな。",
+    "急がず、今できるところからだね。",
+    "少し迷うけど、手は止めたくないな。",
 )
 
 _VISION_MOTION_FALLBACKS = (
-    "手元の動き、今ちょっと見えたよ。",
-    "影がすっと横に流れたね。",
-    "机の端で小さく動いたよ。",
-    "明るいところが一瞬ゆれたね。",
-    "画面の前、少し動きがあったよ。",
-    "輪郭がさっと変わった感じだよ。",
-    "手元が少し忙しそうだね。",
-    "端のほうがすっと動いたよ。",
+    "よし、今のうちに片づけてしまおう。",
+    "あ、次はこっちを見ればよさそうだ。",
+    "少し急いでるけど、落ち着いていこう。",
+    "この流れなら、もう少し進められそう。",
+    "手を動かしてると、考えもまとまるね。",
+    "さて、次の一手を決めたいところだな。",
 )
 
 _VISION_TONES = (
-    "見えた名詞をそのまま拾う",
-    "明るさの変化に触れる",
-    "配置の変化に触れる",
-    "動きを短く受け止める",
-    "作業中の相手を邪魔しない",
-    "少しだけいたずらっぽい",
+    "本人の小さな独り言",
+    "集中している人の内心",
+    "少し疲れたけど前向き",
+    "次にやることを考えている",
+    "静かに気持ちを整えている",
+    "作業中の自然なつぶやき",
 )
 
 
@@ -159,6 +175,46 @@ class VisionWatcher:
         self._dropped = 0
         self._camera_read_failures = 0
         self._last_image_mtime = 0.0
+
+    async def capture_once(self, source: str = "vision:manual") -> Utterance:
+        """Capture one still image now and return a synthesized utterance."""
+        if settings.VISION_IMAGE_PATH:
+            path = Path(settings.VISION_IMAGE_PATH)
+            jpeg = await asyncio.to_thread(path.read_bytes)
+            self._last_image_mtime = path.stat().st_mtime
+            self._last_capture_at = time.time()
+            self._last_error = ""
+            return await self._utterance_from_jpeg(jpeg, None, None, None, source)
+
+        try:
+            cv2 = importlib.import_module("cv2")
+        except Exception as exc:
+            self._last_error = f"OpenCV import failed: {exc}"
+            raise RuntimeError(self._last_error) from exc
+
+        own_cap = False
+        cap = self._cap
+        if cap is None:
+            cap = cv2.VideoCapture(settings.VISION_CAMERA_INDEX)
+            own_cap = True
+        try:
+            if not cap.isOpened():
+                raise RuntimeError(f"camera {settings.VISION_CAMERA_INDEX} could not be opened")
+            frame = None
+            for _ in range(3):
+                ok, frame = cap.read()
+                if not ok:
+                    frame = None
+                await asyncio.sleep(0.03)
+            if frame is None:
+                raise RuntimeError("camera read failed")
+            self._last_capture_at = time.time()
+            self._last_error = ""
+            jpeg = self._encode_jpeg(cv2, frame)
+            return await self._utterance_from_jpeg(jpeg, cv2, frame, None, source)
+        finally:
+            if own_cap:
+                cap.release()
 
     async def start(self) -> None:
         if self._task and not self._task.done():
@@ -375,28 +431,39 @@ class VisionWatcher:
             return
 
         try:
-            raw_text = await self._describe_frame(cv2, frame, jpeg, score)
-            observation = self._clean_vision_text(raw_text)
-            if not observation and cv2 is not None and frame is not None:
-                observation = self._clean_vision_text(self._local_scene_hint(cv2, frame))
-            if observation:
-                styled = await self._style_observation(observation)
-                text = self._clean_vision_text(styled) or observation
-            else:
-                text = self._fallback_reaction(score)
-            text = self.limit_text(text)
-            utterance = await asyncio.to_thread(self.make_utterance, text, "vision")
+            utterance = await self._utterance_from_jpeg(jpeg, cv2, frame, score, "vision")
             if not reservation.commit(utterance):
                 self._dropped += 1
                 return
-            self._last_text = text
-            self._remember_vision_text(text)
-            self._last_spoken_at = time.time()
-            self._last_spoken_monotonic = time.monotonic()
         except Exception as exc:
             reservation.release()
             self._last_error = f"vision reaction failed: {exc}"
             log.exception("Vision reaction failed")
+
+    async def _utterance_from_jpeg(
+        self,
+        jpeg: bytes,
+        cv2,
+        frame,
+        score: float | None,
+        source: str,
+    ) -> Utterance:
+        raw_text = await self._describe_frame(cv2, frame, jpeg, score)
+        observation = self._clean_vision_text(raw_text)
+        if not observation and cv2 is not None and frame is not None:
+            observation = self._clean_vision_text(self._local_scene_hint(cv2, frame))
+        if observation:
+            styled = await self._style_observation(observation)
+            text = self._clean_styled_text(styled, observation) or self._thought_fallback(observation, score)
+        else:
+            text = self._fallback_reaction(score)
+        text = self.limit_text(text)
+        utterance = await asyncio.to_thread(self.make_utterance, text, source)
+        self._last_text = text
+        self._remember_vision_text(text)
+        self._last_spoken_at = time.time()
+        self._last_spoken_monotonic = time.monotonic()
+        return utterance
 
     @staticmethod
     def _encode_jpeg(cv2, frame) -> bytes:
@@ -413,6 +480,7 @@ class VisionWatcher:
         text = text.replace("\r", "\n")
         text = re.sub(r"```(?:[a-zA-Z0-9_-]+)?", "", text)
         text = text.replace("```", "")
+        text = re.sub(r"(?:^|\s)[*•]\s+", "\n", text)
         text = re.sub(
             r"^\s*(?:[-*・]\s*)?(?:ペケ子|回答|返答|一言|セリフ|発話)\s*[:：]\s*",
             "",
@@ -427,6 +495,7 @@ class VisionWatcher:
 
         for candidate in candidates:
             candidate = candidate.strip("「」『』\"'` \t\n")
+            candidate = re.sub(r"^\s*\d+[.)．、]\s*", "", candidate)
             if not candidate:
                 continue
             if candidate[-1] not in "。！？!?":
@@ -451,6 +520,145 @@ class VisionWatcher:
             if not self._is_recent_vision_text(candidate):
                 return candidate
         return options[start]
+
+    def _thought_fallback(self, observation: str, score: float | None) -> str:
+        obs = str(observation or "").lower()
+        if ("above" in obs or "overhead" in obs) and ("look" in obs or "looking" in obs):
+            options = (
+                "上のほう、少し確認しておきたいな。",
+                "あれ、上の様子をもう少し見たいな。",
+                "上を見ながら、少し考えを整理しよう。",
+            )
+        elif "resting" in obs and ("chin" in obs or "hand" in obs):
+            options = (
+                "うーん、ちょっと考え込んじゃうな。",
+                "ここは少し立ち止まって考えたいな。",
+                "焦らず、もう少し考えてから動こう。",
+            )
+        elif "looking down" in obs or "look down" in obs:
+            options = (
+                "うーん、手元を見ながら整理しよう。",
+                "少し下を向いて、考えをまとめたいな。",
+                "今は静かに考えていたいところだ。",
+            )
+        elif "holding" in obs and any(word in obs for word in ("phone", "device", "smartphone", "black device")):
+            options = (
+                "この端末、どこまで見たっけ。",
+                "端末を見ながら、少し考えを整理しよう。",
+                "この端末の続き、落ち着いて確認しよう。",
+            )
+        elif any(word in obs for word in ("phone", "device", "smartphone", "black device")):
+            options = (
+                "この端末、もう少しだけ確認しよう。",
+                "端末の続き、落ち着いて見ていこう。",
+                "スマホの内容、少し整理したいな。",
+            )
+        elif any(word in obs for word in ("screen", "monitor", "display")):
+            options = (
+                "この画面、もう少し集中して見よう。",
+                "画面の続き、落ち着いて確認したいな。",
+                "よし、画面を見ながら考えをまとめよう。",
+            )
+        elif any(word in obs for word in ("keyboard", "desk", "paper")):
+            options = (
+                "机の上、少し整理してから進めよう。",
+                "キーボードに戻って、少し進めたいな。",
+                "この紙、あとでちゃんと確認しよう。",
+                "机まわり、落ち着いて片づけたいな。",
+            )
+        elif "glasses" in obs or "eyeglasses" in obs:
+            options = (
+                "少し目が疲れたし、休みたいな。",
+                "目元が重いから、少し整えよう。",
+                "メガネ、あとで少し直そうかな。",
+            )
+        elif "lanyard" in obs or "strap" in obs or "badge" in obs:
+            options = (
+                "首元のストラップ、あとで整えよう。",
+                "このストラップ、少し気になるな。",
+                "ストラップを直して、気持ちも整えよう。",
+            )
+        elif "hand" in obs:
+            options = (
+                "手元、落ち着いて進めていこう。",
+                "この手元の続き、もう少しやろう。",
+                "手を動かしながら考えをまとめたいな。",
+            )
+        elif any(word in obs for word in ("man", "woman", "person", "face")):
+            options = (
+                "顔まわり、少し疲れてるかもな。",
+                "うーん、顔を上げて少し考えよう。",
+                "今は顔を伏せて、少し集中したいな。",
+            )
+        elif "明る" in obs or "brightness" in obs or "light" in obs:
+            options = (
+                "この明るさなら、少し落ち着けそうだ。",
+                "明るさがちょうどいいし、集中しよう。",
+                "この明るさなら、もう少し考えられそう。",
+            )
+        elif "黄色" in obs or "yellow" in obs:
+            options = (
+                "少し黄色っぽい光で、落ち着くな。",
+                "この色味、なんだか集中しやすいな。",
+                "黄色っぽい明かりで、少し考えよう。",
+            )
+        elif "輪郭" in obs or "edge" in obs or "detail" in obs:
+            options = (
+                "細かいところまで、もう少し見ておこう。",
+                "輪郭が多いし、少し丁寧に確認しよう。",
+                "細かい部分、落ち着いて見たいな。",
+            )
+        else:
+            options = tuple(_VISION_MOTION_FALLBACKS if score else _VISION_FALLBACKS)
+
+        start = (self._vision_turn + int(time.time() // 7)) % len(options)
+        for offset in range(len(options)):
+            candidate = options[(start + offset) % len(options)]
+            if not self._is_recent_vision_text(candidate):
+                return candidate
+        return options[start]
+
+    def _clean_styled_text(self, text: str, observation: str = "") -> str:
+        candidate = self._clean_vision_text(text)
+        if not candidate:
+            return ""
+        if len(self._normalize_vision_text(candidate)) <= 4:
+            return ""
+        if any(fragment in candidate for fragment in _VISION_STYLED_BAD_FRAGMENTS):
+            return ""
+        anchors = self._expected_anchor_terms(observation)
+        if anchors and not any(anchor in candidate for anchor in anchors):
+            return ""
+        return candidate
+
+    @staticmethod
+    def _expected_anchor_terms(observation: str) -> tuple[str, ...]:
+        obs = str(observation or "").lower()
+        if ("above" in obs or "overhead" in obs) and ("look" in obs or "looking" in obs):
+            return ("上", "見上", "確認")
+        if "resting" in obs and ("chin" in obs or "hand" in obs):
+            return ("考え", "迷", "整理", "立ち止")
+        if "holding" in obs and any(word in obs for word in ("phone", "device", "smartphone", "black device")):
+            return ("端末", "スマホ", "確認", "見")
+        if any(word in obs for word in ("phone", "device", "smartphone", "black device")):
+            return ("端末", "スマホ", "確認")
+        if any(word in obs for word in ("screen", "monitor", "display")):
+            return ("画面", "確認", "集中")
+        if any(word in obs for word in ("keyboard", "desk", "paper")):
+            return ("机", "キーボード", "紙", "整理", "確認")
+        if "glasses" in obs or "eyeglasses" in obs:
+            return ("目", "メガネ", "休", "整")
+        if "lanyard" in obs or "strap" in obs or "badge" in obs:
+            return ("ストラップ", "首元", "整")
+        if "hand" in obs:
+            return ("手", "手元", "進め", "考え")
+        if "明る" in obs or "brightness" in obs or "light" in obs:
+            return ("明る", "光", "集中", "落ち着")
+        if "黄色" in obs or "yellow" in obs:
+            return ("黄色", "色味", "明かり")
+        if "輪郭" in obs or "edge" in obs or "detail" in obs:
+            return ("輪郭", "細か", "確認")
+        return ()
 
     def _remember_vision_text(self, text: str) -> None:
         normalized = self._normalize_vision_text(text)
@@ -478,14 +686,23 @@ class VisionWatcher:
     async def _style_observation(self, observation: str) -> str:
         tone = _VISION_TONES[self._vision_turn % len(_VISION_TONES)]
         prompt = (
-            "以下の観察だけを材料に、ペケ子の自然な一言へ直して。"
-            "観察にないものは足さない。"
-            "必ず観察中の名詞を1つ残す。"
+            "以下の観察を材料に、状況説明ではなく、そこに写っている本人が言いそうな短い会話や想いへ直して。"
+            "人が写っているなら、その人の内心か独り言として自然にする。"
+            "人がいない観察なら、持ち主がその場で言いそうな気持ちにする。"
+            "観察にない具体的な事実は足さないが、気持ちは自然に補ってよい。"
+            "断定しすぎず、ありそうな一言にする。"
+            "机、画面、手、顔、スマホなど観察中の名詞を必要なら1つだけ残す。"
             "画像、写真、カメラ、検出、解析、物体とは言わない。"
-            "「何か」「気配」「存在感」「気になる」だけで終えない。"
-            "日本語14〜38字の一文だけ。"
-            "見えたものに対して軽く反応する。"
-            "質問で終えすぎない。"
+            "見えたものを説明する文で終えない。"
+            "「その人は」「この人は」「見える」「写っている」「ようだ」「ように見える」「そうだ」「そうだな」は禁止。"
+            "「何か」「気配」「存在感」「気になる」「雰囲気」は禁止。"
+            "日本語12〜34字の一文だけ。"
+            "必ず一人称か独り言にする。"
+            "例: よし、もう少しだけ集中しよう。"
+            "例: うーん、少し考えを整理したいな。"
+            "例: ここは落ち着いて確認しておこう。"
+            "例: 少し寂しいけど、もう少し頑張ろう。"
+            "質問で終えない。"
             f"今回の口調: {tone}。"
             f"{self._recent_text_prompt()}"
             f"観察: {observation}"

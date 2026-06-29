@@ -257,6 +257,96 @@ public:
         return r;
     }
 
+    // 母艦の内蔵カメラで静止画を 1 枚撮り、vision LLM + TTS の応答 WAV を返す
+    static ChatResponse captureVision() {
+        ChatResponse r;
+        Serial.printf("[HTTP] /vision/capture post host=%s:%u\n",
+                      SERVER_HOST, (unsigned)SERVER_PORT);
+
+        WiFiClient client;
+        if (!connectWithRetry(client, SERVER_HOST, SERVER_PORT)) {
+            log_e("connect failed: %s:%u", SERVER_HOST, (unsigned)SERVER_PORT);
+            return r;
+        }
+        client.setTimeout(HTTP_TIMEOUT_MS);
+
+        client.print("POST /vision/capture HTTP/1.1\r\n");
+        client.printf("Host: %s:%u\r\n", SERVER_HOST, (unsigned)SERVER_PORT);
+        client.print("Content-Length: 0\r\n");
+        client.print("Accept: audio/wav\r\n");
+        client.print("Connection: close\r\n\r\n");
+
+        String status = client.readStringUntil('\n');
+        int sp1 = status.indexOf(' ');
+        int sp2 = status.indexOf(' ', sp1 + 1);
+        if (sp1 > 0 && sp2 > sp1) {
+            r.http_status = status.substring(sp1 + 1, sp2).toInt();
+        }
+
+        size_t resp_len = 0;
+        while (client.connected() || client.available()) {
+            String line = client.readStringUntil('\n');
+            if (line == "\r" || line.length() == 0) break;
+            line.trim();
+            const int colon = line.indexOf(':');
+            if (colon <= 0) continue;
+
+            String name = line.substring(0, colon);
+            String value = line.substring(colon + 1);
+            name.toLowerCase();
+            value.trim();
+
+            if (name == "content-length") {
+                resp_len = (size_t)value.toInt();
+            } else if (name == "x-stackchan-bot-text") {
+                r.bot_text = urlDecode(value);
+            } else if (name == "x-stackchan-timing") {
+                r.timing = value;
+            } else if (name == "x-stackchan-tts-backend") {
+                r.tts_backend = value;
+            } else if (name == "x-stackchan-emote") {
+                r.emote = value;
+            }
+        }
+        Serial.printf("[HTTP] /vision/capture status=%d len=%u bot='%s' emote='%s'\n",
+                      r.http_status,
+                      (unsigned)resp_len,
+                      r.bot_text.c_str(),
+                      r.emote.length() ? r.emote.c_str() : "neutral");
+
+        if (r.http_status != 200 || resp_len == 0) {
+            log_e("HTTP %d, len=%u", r.http_status, (unsigned)resp_len);
+            client.stop();
+            return r;
+        }
+
+        r.body = static_cast<uint8_t*>(ps_malloc(resp_len));
+        if (!r.body) {
+            log_e("ps_malloc(%u) failed for vision response heap=%u psram=%u",
+                  (unsigned)resp_len,
+                  (unsigned)ESP.getFreeHeap(),
+                  (unsigned)ESP.getFreePsram());
+            client.stop();
+            return r;
+        }
+        size_t got = 0;
+        const uint32_t deadline = millis() + HTTP_TIMEOUT_MS;
+        while (got < resp_len && millis() < deadline) {
+            int n = client.read(r.body + got, resp_len - got);
+            if (n > 0) got += n;
+            else delay(1);
+        }
+        r.body_size = got;
+        r.ok = (got == resp_len);
+        if (!r.ok) {
+            free(r.body);
+            r.body = nullptr;
+            r.body_size = 0;
+        }
+        client.stop();
+        return r;
+    }
+
     // 定期発話 / 外部 push を取りに行く (GET /pull)。
     // wait_seconds=0 なら即時応答 (空なら 204)。> 0 で server 側 long-poll。
     // CoreS3 側は待機ループ中に呼ぶので、wait_seconds=0 の短ポーリングが基本。
