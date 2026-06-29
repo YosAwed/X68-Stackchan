@@ -54,6 +54,25 @@ static constexpr uint8_t  SPK_VOLUME = 180; // 0..255
 #define SERVO_ENABLED 1
 // ピン番号は servo_controller.h に固定 (GPIO6=TX, GPIO7=RX)
 
+// ---- Power management ---------------------------------------
+// 0: Idle 30分後はソフトSleepに入り、タッチ/リモコンで復帰できる。
+// 1: 従来通り deep sleep に入る。環境によっては電源ボタン以外で復帰できない。
+#define POWER_IDLE_DEEP_SLEEP_ENABLED 0
+
+// ---- SAM2695 MIDI module ------------------------------------
+// UART MIDI 音源をぶら下げる場合は 1 にする。MIDI は 31250 bps。
+// TX だけ接続すれば発音できる。RX を使わない場合は -1 のままでよい。
+// CoreS3 の Port C / UART Grove を使う場合は、実配線に合わせて TX/RX を調整する。
+#define MIDI_SAM2695_ENABLED 0
+#define MIDI_UART_TX_PIN 17
+#define MIDI_UART_RX_PIN -1
+// 0..127。SAM2695 が大きい場合は 24〜48 あたりから調整する。
+#define MIDI_VOLUME 48
+// MIDI 再生中、Idle 状態なら曲の拍に合わせて首を振る。
+#define MIDI_DANCE_ENABLED 1
+// 何小節ごとに縦うなずきを入れるか。0 で縦うなずきなし。
+#define MIDI_DANCE_NOD_MEASURES 4
+
 // ---- HTTP タイムアウト --------------------------------------
 // STT + LLM + TTS の合計を待つ。GPU やモデルサイズに応じて調整する。
 // 目安: MAX_REC_SECONDS * 1000 + LLM 最大 30000 + TTS 最大 15000。

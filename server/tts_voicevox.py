@@ -21,8 +21,20 @@ class TTS:
 
         self.host = host.rstrip("/")
         self.speaker = speaker
+        self.speed_scale = settings.VOICEVOX_SPEED_SCALE
+        self.pitch_scale = settings.VOICEVOX_PITCH_SCALE
+        self.intonation_scale = settings.VOICEVOX_INTONATION_SCALE
+        self.volume_scale = settings.VOICEVOX_VOLUME_SCALE
         self._client = httpx.Client(base_url=self.host, timeout=timeout_s)
-        log.info("VOICEVOX backend ready (host=%s, speaker=%d)", self.host, self.speaker)
+        log.info(
+            "VOICEVOX backend ready (host=%s, speaker=%d, speed=%.2f, pitch=%.2f, intonation=%.2f, volume=%.2f)",
+            self.host,
+            self.speaker,
+            self.speed_scale,
+            self.pitch_scale,
+            self.intonation_scale,
+            self.volume_scale,
+        )
 
     def status(self) -> dict:
         try:
@@ -33,6 +45,10 @@ class TTS:
                 "backend": "voicevox",
                 "host": self.host,
                 "speaker": self.speaker,
+                "speed_scale": self.speed_scale,
+                "pitch_scale": self.pitch_scale,
+                "intonation_scale": self.intonation_scale,
+                "volume_scale": self.volume_scale,
                 "version": r.text.strip().strip('"'),
             }
         except Exception as e:
@@ -41,6 +57,10 @@ class TTS:
                 "backend": "voicevox",
                 "host": self.host,
                 "speaker": self.speaker,
+                "speed_scale": self.speed_scale,
+                "pitch_scale": self.pitch_scale,
+                "intonation_scale": self.intonation_scale,
+                "volume_scale": self.volume_scale,
                 "error": str(e),
             }
 
@@ -56,8 +76,10 @@ class TTS:
         # CoreS3 側の I2S 設定に合わせて 16kHz mono に揃える
         query["outputSamplingRate"] = 16000
         query["outputStereo"] = False
-        # 速さを少しだけ上げる (好みで)
-        query["speedScale"] = 1.05
+        query["speedScale"] = self.speed_scale
+        query["pitchScale"] = self.pitch_scale
+        query["intonationScale"] = self.intonation_scale
+        query["volumeScale"] = self.volume_scale
 
         # 2) 合成
         r = self._client.post(

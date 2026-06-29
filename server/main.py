@@ -101,7 +101,13 @@ def _tts_cache_version() -> str:
             f"emoji={settings.IRODORI_EMOJI_STYLE}",
         ])
     elif settings.TTS_BACKEND == "voicevox":
-        parts.append(f"speaker={settings.VOICEVOX_SPEAKER}")
+        parts.extend([
+            f"speaker={settings.VOICEVOX_SPEAKER}",
+            f"speed={settings.VOICEVOX_SPEED_SCALE}",
+            f"pitch={settings.VOICEVOX_PITCH_SCALE}",
+            f"intonation={settings.VOICEVOX_INTONATION_SCALE}",
+            f"volume={settings.VOICEVOX_VOLUME_SCALE}",
+        ])
     return "|".join(str(p) for p in parts)
 
 

@@ -37,12 +37,39 @@
 #include "imu_handler.h"
 #include "remote_handler.h"
 #include "power.h"
+#include "midi_player.h"
+#include "midi_song_can_can_bunny_2.h"
 
 using namespace stackchan;
+
+#ifndef MIDI_SAM2695_ENABLED
+#define MIDI_SAM2695_ENABLED 0
+#endif
+#ifndef MIDI_UART_TX_PIN
+#define MIDI_UART_TX_PIN -1
+#endif
+#ifndef MIDI_UART_RX_PIN
+#define MIDI_UART_RX_PIN -1
+#endif
+#ifndef MIDI_VOLUME
+#define MIDI_VOLUME 48
+#endif
+#ifndef MIDI_DANCE_ENABLED
+#define MIDI_DANCE_ENABLED 1
+#endif
+#ifndef MIDI_DANCE_NOD_MEASURES
+#define MIDI_DANCE_NOD_MEASURES 4
+#endif
+#ifndef POWER_IDLE_DEEP_SLEEP_ENABLED
+#define POWER_IDLE_DEEP_SLEEP_ENABLED 0
+#endif
 
 static PekekoFace     g_face;
 static AudioRecorder  g_rec;
 static PowerManager   g_pwr;
+static MidiPlayer     g_midi;
+static uint8_t        g_midi_volume = MIDI_VOLUME;
+static uint32_t       g_midi_dance_step = 0xFFFFFFFFu;
 static State          g_state = State::Boot;
 static PowerManager::IdleStage g_idle_stage_last = PowerManager::IdleStage::Active;
 static bool           g_wait_release_after_auto_send = false;
@@ -210,6 +237,79 @@ static void updateRemoteAButton(bool edge, bool& single_click, bool& double_clic
         single_click = true;
     }
 }
+
+#if MIDI_SAM2695_ENABLED
+static void setMidiVolume(uint8_t volume) {
+    g_midi_volume = volume > 127 ? 127 : volume;
+    g_midi.setVolume(g_midi_volume);
+}
+
+static void adjustMidiVolume(int delta) {
+    int next = (int)g_midi_volume + delta;
+    if (next < 0) next = 0;
+    if (next > 127) next = 127;
+    setMidiVolume((uint8_t)next);
+}
+
+static void stopMidiPlayback(const char* source) {
+    if (!g_midi.isPlaying()) return;
+    Serial.printf("[MIDI] stop requested by %s\n", source);
+    g_midi.stop();
+}
+
+static void toggleMidiPlayback(const char* source) {
+    if (g_midi.isPlaying()) {
+        stopMidiPlayback(source);
+        return;
+    }
+    if (!g_midi.isReady()) {
+        Serial.println("[MIDI] not ready");
+        return;
+    }
+    Serial.printf("[MIDI] play requested by %s\n", source);
+    g_midi.play(
+        songs::CAN_CAN_BUNNY_2_SUPERIOR_SELECT_SCENARIO_MID,
+        songs::CAN_CAN_BUNNY_2_SUPERIOR_SELECT_SCENARIO_MID_LEN);
+}
+
+static void updateMidiDance() {
+#if SERVO_ENABLED && MIDI_DANCE_ENABLED
+    if (!g_midi.isPlaying() || g_state != State::Idle) {
+        g_midi_dance_step = 0xFFFFFFFFu;
+        return;
+    }
+
+    const uint16_t division = g_midi.division();
+    if (division == 0) return;
+
+    const uint32_t step_ticks = max<uint32_t>(1, division / 2);
+    const uint32_t tick = g_midi.playbackTick();
+    const uint32_t step = tick / step_ticks;
+    if (step == g_midi_dance_step) return;
+    g_midi_dance_step = step;
+
+    const uint32_t measure_ticks = g_midi.ticksPerMeasure();
+    if (MIDI_DANCE_NOD_MEASURES > 0 && measure_ticks > 0) {
+        const uint32_t measure = tick / measure_ticks;
+        const uint32_t step_in_measure = (tick % measure_ticks) / step_ticks;
+        if (measure > 0 &&
+            (measure % MIDI_DANCE_NOD_MEASURES) == 0 &&
+            step_in_measure < 2) {
+            const float pitch = (step_in_measure == 0) ? 0.30f : -0.10f;
+            g_servo.setTarget(0.0f, pitch, ServoController::LERP_FAST);
+            return;
+        }
+    }
+
+    if ((step & 1u) == 0) {
+        const float side = (step & 2u) ? -0.28f : 0.28f;
+        g_servo.setTarget(side, 0.10f, ServoController::LERP_FAST);
+    } else {
+        g_servo.setTarget(0.0f, -0.03f, ServoController::LERP_FAST);
+    }
+#endif
+}
+#endif
 
 static void clearSideStatus() {
     // 顔画像を 320x240 全画面にしたため、左右のステータス余白はない。
@@ -604,6 +704,10 @@ void setup() {
 #if RGB_ENABLED
     g_rgb.begin();
 #endif
+#if MIDI_SAM2695_ENABLED
+    g_midi.begin(MIDI_UART_TX_PIN, MIDI_UART_RX_PIN);
+    setMidiVolume(g_midi_volume);
+#endif
 
     if (!g_rec.begin()) {
         g_face.show(faces::FACE_ERR_GENERIC);
@@ -642,6 +746,19 @@ void setup() {
 void loop() {
     M5.update();
     M5StackChan.update();   // 頭頂タッチセンサー (Si12T) のポーリング
+#if MIDI_SAM2695_ENABLED
+    g_midi.update();
+    while (Serial.available()) {
+        const char c = (char)Serial.read();
+        if (c == 'm' || c == 'M') {
+            toggleMidiPlayback("serial");
+        } else if (c == '+') {
+            adjustMidiVolume(10);
+        } else if (c == '-') {
+            adjustMidiVolume(-10);
+        }
+    }
+#endif
 
     // CoreS3 SE は物理ボタンが無く、M5Unified の virtual button マッピングも
     // デフォルトでは効かない (touch 検知はできるが BtnA/B/C は発火しない)。
@@ -652,6 +769,7 @@ void loop() {
         pressed = t.isPressed();
     }
     const bool remote_a_edge = g_remote.btnAEdge();  // 毎フレーム呼ぶ (エッジ追跡)
+    const bool remote_b_edge = g_remote.btnBEdge();  // MIDI 再生トグル
     bool remote_ptt_edge = false;
     bool remote_vision_edge = false;
     updateRemoteAButton(remote_a_edge, remote_ptt_edge, remote_vision_edge);
@@ -771,6 +889,13 @@ void loop() {
                 }
             }
 #endif
+#if MIDI_SAM2695_ENABLED
+            // リモコン BtnB: SAM2695 MIDI モジュールで添付曲を再生 / 停止
+            if (remote_b_edge && !g_wait_release_after_auto_send) {
+                toggleMidiPlayback("remote BtnB");
+                break;
+            }
+#endif
             // リモコン BtnA ダブルクリック: 母艦の内蔵カメラで静止画を撮って vision 応答
             if (remote_vision_edge && !g_wait_release_after_auto_send) {
                 Serial.println("[VISION] capture requested by remote double-click");
@@ -820,6 +945,9 @@ void loop() {
             if ((pressed || remote_ptt_edge) && !g_wait_release_after_auto_send) {
                 Serial.printf("[PTT ] start source=%s\n",
                               pressed ? "touch" : "remote");
+#if MIDI_SAM2695_ENABLED
+                stopMidiPlayback("PTT");
+#endif
                 if (pressed) {
                     g_face.show(faces::F_SURPRISED);
                     delay(150);
@@ -1045,10 +1173,10 @@ void loop() {
             break;
     }
 
-    // 電源管理: 低電池 (≤5%) は即 powerOff。Idle は段階顔を経て deep sleep。
+    // 電源管理: 低電池 (≤5%) は即 powerOff。Idle は段階顔を経てSleepへ。
     g_pwr.poll();
 
-    // Idle 段階化: 3 分 退屈 / 4 分 あくび / 5 分 Zzz / 30 分 deep sleep
+    // Idle 段階化: 3 分 退屈 / 4 分 あくび / 5 分 Zzz / 30 分 Sleep
     const auto stage = g_pwr.idleStage(g_state);
     if (stage != g_idle_stage_last) {
         g_idle_stage_last = stage;
@@ -1061,12 +1189,29 @@ void loop() {
     }
     if (g_pwr.shouldSleep(g_state)) {
         delay(500);   // Zzz 顔を見せる余裕
+#if POWER_IDLE_DEEP_SLEEP_ENABLED
         g_pwr.enterDeepSleep();
         // ここには戻ってこない (復帰時はリセット → setup() 再走)
+#else
+#if MIDI_SAM2695_ENABLED
+        stopMidiPlayback("idle sleep");
+#endif
+#if RGB_ENABLED
+        g_rgb.setScene(RgbScene::Sleep);
+#endif
+        g_sleep_enter_ms = millis();
+        g_sleep_head_released = false;
+        g_wait_release_after_auto_send = true;
+        setState(State::Sleep, faces::F_SLEEPING);
+        Serial.println("[SLEEP] entered by idle timeout");
+#endif
     }
 
 #if SERVO_ENABLED
     if (g_state != State::Sleep && !g_pwr.batteryLow()) {
+#if MIDI_SAM2695_ENABLED
+        updateMidiDance();
+#endif
         g_servo.update();
     }
 #endif

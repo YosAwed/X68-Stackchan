@@ -1,12 +1,12 @@
 // ========================================================
-//  電源管理 (バッテリ駆動時の安全策 + アイドル時 deep sleep)
+//  電源管理 (バッテリ駆動時の安全策 + アイドル時Sleep)
 //
 //  - クリティカル (≤5%): 即 powerOff() で安全停止
 //  - 低電池 (≤15%): 警告フラグを立てる (batteryLow() で参照可。
 //    現状の UART サーボ (SCS0009) は SG90 ほど突入電流問題が無いので
 //    主動的なサーボ抑止はしていないが、将来 SG90 系を併用するときの
 //    フックは残してある)
-//  - Idle が 30 分以上続いたら deep sleep。電源ボタンで復帰 (= リセット)
+//  - Idle が 30 分以上続いたら main.cpp 側でSleepへ移行
 //
 //  残量表示はやらない方針なので、状態は serial と動作 (入眠 / 停止)
 //  のみで間接的に分かる。
@@ -62,7 +62,7 @@ public:
     //   Active   : Idle に入ったばかり ( < 3 分)
     //   Bored    : 退屈そう (3 分超)
     //   Yawn     : あくび (4 分超)
-    //   Sleeping : Zzz 表情 (5 分超、30 分で deep sleep)
+    //   Sleeping : Zzz 表情 (5 分超、30 分でSleep)
     enum class IdleStage { Active, Bored, Yawn, Sleeping };
 
     IdleStage idleStage(State state) const {
@@ -78,7 +78,7 @@ public:
         return state == State::Idle && millis() - last_activity_ms_ >= IDLE_SLEEP_MS;
     }
 
-    // Zzz 表情を出してから呼ぶこと。戻ってこない (復帰時はリセット → setup() 再走)。
+    // 設定でハード deep sleep を使う場合だけ呼ぶ。戻ってこない。
     void enterDeepSleep() {
         Serial.println("[PWR ] Idle timeout, deep sleep (press POWER button to wake)");
         delay(50);

@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     # ---- VOICEVOX (when TTS_BACKEND=voicevox) ----
     VOICEVOX_HOST: str = "http://127.0.0.1:50021"
     VOICEVOX_SPEAKER: int = 3
+    VOICEVOX_SPEED_SCALE: float = Field(default=1.0, gt=0.0)
+    VOICEVOX_PITCH_SCALE: float = Field(default=0.0, ge=-0.15, le=0.15)
+    VOICEVOX_INTONATION_SCALE: float = Field(default=1.0, ge=0.0)
+    VOICEVOX_VOLUME_SCALE: float = Field(default=1.0, gt=0.0)
 
     # ---- macOS say (when TTS_BACKEND=macsay) ----
     MACSAY_VOICE: str = "Kyoko"
