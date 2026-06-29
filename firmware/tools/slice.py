@@ -22,7 +22,7 @@ OUT_DIR  = FIRMWARE / "data"                    # LittleFS root に直接書き�
 
 TARGET_W = 320
 TARGET_H = 240
-FACE_CROP_W = 216
+FACE_CROP_W = 162
 FACE_CROP_H = 162
 FACE_CROP_Y = 32
 
