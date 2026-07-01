@@ -836,7 +836,7 @@ void loop() {
             // g_touch.update() に一本化して Swipe/Pet を区別する。
             if (!g_wait_release_after_auto_send) {
                 const uint32_t now = millis();
-                const auto touch_ev = g_touch.update();
+                const auto touch_ev = g_touch.update(M5StackChan.TouchSensor.getIntensities());
                 bool headpat_fallback = false;
                 if (M5StackChan.TouchSensor.isPressed()) {
                     if (g_headpat_idle_press_ms == 0) {

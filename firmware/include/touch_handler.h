@@ -1,6 +1,6 @@
 // ========================================================
 //  Si12T 3ゾーン静電タッチ — スワイプ / なでなで検出
-//  I2C 0x68 (Wire / Port.A バス)
+//  StackChan BSP が読んだ Si12T の 3 ゾーン強度からイベントを判定する。
 //
 //  スワイプ: 異なるゾーンへの遷移 (SWIPE_WINDOW_MS 以内)
 //  なでなで: 同一ゾーンを HOLD_MS 以上保持
@@ -8,7 +8,7 @@
 // ========================================================
 #pragma once
 #include <Arduino.h>
-#include <Wire.h>
+#include <array>
 
 namespace stackchan {
 
@@ -24,11 +24,11 @@ public:
     enum class Event : uint8_t { None=0, Pet, Swipe };
 
     // None/Pet/Swipe を返す。Swipe はスワイプ、Pet はなでなで検出。
-    Event update() {
+    Event update(const std::array<uint8_t, 3>& intensities) {
         const uint32_t now  = millis();
         if (now - last_event_ms_ < COOL_MS) return Event::None;
 
-        const Zone zone = readZone();
+        const Zone zone = readZone(intensities);
 
         switch (state_) {
             case S::Idle:
@@ -66,15 +66,10 @@ private:
     uint32_t first_ms_      = 0;
     uint32_t last_event_ms_ = 0;
 
-    static Zone readZone() {
-        Wire.beginTransmission(SI12T_ADDR);
-        Wire.write(REG_STATUS);
-        if (Wire.endTransmission(false) != 0) return Zone::None;
-        if (Wire.requestFrom(SI12T_ADDR, (uint8_t)1) != 1) return Zone::None;
-        const uint8_t s = Wire.read();
-        if (s & 0x01) return Zone::Left;
-        if (s & 0x02) return Zone::Center;
-        if (s & 0x04) return Zone::Right;
+    static Zone readZone(const std::array<uint8_t, 3>& intensities) {
+        if (intensities[0] > 0) return Zone::Left;
+        if (intensities[1] > 0) return Zone::Center;
+        if (intensities[2] > 0) return Zone::Right;
         return Zone::None;
     }
 };
