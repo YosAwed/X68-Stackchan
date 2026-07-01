@@ -277,7 +277,7 @@ python -m serial.tools.miniterm COM3 115200
 | ビルド時に `sdkconfig.h: No such file`     | `platformio.ini` は pioarduino フォーク必須 (公式 platformio/espressif32 6.x は SDK 同梱が不完全)。本リポは既に `pioarduino/platform-espressif32` 55.03.38-1 に切替済み |
 | 画面下を触っても録音にならない              | M5Unified の virtual BtnA はデフォルト無効。本リポは `M5.Touch.getDetail(0).isPressed()` を直接読む実装に置換済み |
 | 起動直後に `LittleFS init failed` が画面に残る | LittleFS が空 (face JPG 未書き込み)。`pio run -t buildfs` → 0x610000 に焼き直す                |
-| 30 秒おきに勝手にリセット                  | `OFFLINE_MODE=1` で焼いてるのに何か入力したか、ロングポール `/pull` が WiFi 未初期化で crash 中。`OFFLINE_MODE` が main.cpp 経路を塞ぐので最新コードで再ビルド |
+| 30 秒おきに勝手にリセット                  | 旧版で Wi-Fi 未初期化のまま `/pull` した、または接続中に `WiFi.begin()` を重ねた。最新版は `wifi_manager.h` + `ChatClient::wifiReady()` で防止。`OFFLINE_MODE=1` でも同様に安全 |
 | 表情遷移時に顔位置がズレる / 下端に白い線  | `firmware/tools/align_face_bottoms.py` を回して `firmware/data/` を再生成 → `buildfs` で焼き直し |
 
 ## 今のステータス
@@ -296,7 +296,7 @@ python -m serial.tools.miniterm COM3 115200
 ### TTS (Irodori-TTS-Lite) 周り
 - [x] **TTS/LLM/STT の処理時間計測**: `/chat` / `/chat_text` / `/speak` は `X-Stackchan-Timing` を返す。Irodori 経路は `/ready` の `tts.last_*` とログで推論時間・変換時間・推定秒数を確認できる
 - [x] **実機ログでの切り分け補助**: CoreS3 のシリアルログに `[TIME]` / `[TTS ]` を出し、サーバ側は LLM 設定・履歴上限・音声サイズ上限を `.env` で調整可能
-- [ ] **fork 側に `synthesize(text) -> waveform` を露出**: 上記が遅ければ、`irodori_tts.inference_runtime.InferenceRuntime` をシングルトン化してクリーンな関数として export。[server/tts_irodori.py](server/tts_irodori.py) の tempfile + sys.argv ブロックを直接呼び出しに置換できる
+- [x] **InferenceRuntime シングルトン化**: [server/tts_irodori.py](server/tts_irodori.py) は `get_cached_runtime()` + `runtime.synthesize()` を直接呼び、`infer.main()` / tempfile / sys.argv 経路を廃止済み
 - [ ] **`IRODORI_REF_WAV` の確定**: ぺけ子ちゃん声の参照音声 WAV を用意するか、`--no-ref` (voice-design checkpoint) のまま行くか決める
 - [x] **`infer` モジュール = 親パッケージ `irodori_tts` の import 確認**: [YosAwed/Irodori-TTS-Lite](https://github.com/YosAwed/Irodori-TTS-Lite) フォークが `irodori-tts` と `infer` を pip 依存として同梱済み
 
@@ -318,4 +318,4 @@ python -m serial.tools.miniterm COM3 115200
 - [ ] ウェイクワード化 (現状は LCD タッチで push-to-talk)
 - [ ] チャイムを本格的に FM 風にする (M5Unified の波形カスタマイズ or 短い PCM サンプル)
 - [ ] Si12T のスワイプ方向検出 (`wasSwipedForward` / `wasSwipedBackward`) を使った「逆撫で → 困り顔」演出
-- [ ] 過去の WiFi 接続中 `xQueueSemaphoreTake assert` クラッシュの根本対応 (現在は OFFLINE_MODE で迂回)
+- [x] 過去の WiFi 接続中 `xQueueSemaphoreTake assert` クラッシュ: `wifi_manager.h` で STA 初期化/`WiFi.begin()` の重複を抑止し、`ChatClient` は未接続時に TCP を開かない

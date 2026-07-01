@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <cstring>
 #include "config.h"
+#include "wifi_manager.h"
 
 namespace stackchan {
 
@@ -51,8 +52,13 @@ struct PullResponse {
 
 class ChatClient {
 public:
+    // Wi-Fi 未接続時に TCP を開くと lwIP / Wi-Fi ドライバが assert することがある。
+    static bool wifiReady() {
+        return WiFiManager::isConnected();
+    }
+
     // 1 回リトライする簡易 connect（瞬断に少し強くなる）。
-    // ランタイムは ensureWiFiConnected() が先に呼ばれる前提。
+    // ランタイムは WiFiManager::ensureConnected() が先に呼ばれる前提。
     static bool connectWithRetry(WiFiClient& c, const char* host, uint16_t port, uint32_t extra_delay_ms = 150) {
         if (c.connect(host, port)) return true;
         delay(extra_delay_ms);
@@ -61,6 +67,10 @@ public:
 
     static ReadyResponse ready() {
         ReadyResponse r;
+        if (!wifiReady()) {
+            log_e("ready skipped: WiFi not connected");
+            return r;
+        }
 
         WiFiClient client;
         if (!client.connect(SERVER_HOST, SERVER_PORT)) {
@@ -132,6 +142,10 @@ public:
     // 録音 WAV をサーバに送って、応答 WAV を返す
     static ChatResponse send(const uint8_t* wav, size_t wav_size) {
         ChatResponse r;
+        if (!wifiReady()) {
+            log_e("chat skipped: WiFi not connected");
+            return r;
+        }
         Serial.printf("[HTTP] /chat post wav=%u host=%s:%u\n",
                       (unsigned)wav_size, SERVER_HOST, (unsigned)SERVER_PORT);
 
@@ -260,6 +274,10 @@ public:
     // 母艦の内蔵カメラで静止画を 1 枚撮り、vision LLM + TTS の応答 WAV を返す
     static ChatResponse captureVision() {
         ChatResponse r;
+        if (!wifiReady()) {
+            log_e("vision skipped: WiFi not connected");
+            return r;
+        }
         Serial.printf("[HTTP] /vision/capture post host=%s:%u\n",
                       SERVER_HOST, (unsigned)SERVER_PORT);
 
@@ -347,11 +365,111 @@ public:
         return r;
     }
 
+    // 任意テキストを /speak に投げて、合成済み WAV を返す。
+    static ChatResponse speakText(const String& text) {
+        ChatResponse r;
+        if (!wifiReady()) {
+            log_e("speak skipped: WiFi not connected");
+            return r;
+        }
+        Serial.printf("[HTTP] /speak post chars=%u host=%s:%u\n",
+                      (unsigned)text.length(), SERVER_HOST, (unsigned)SERVER_PORT);
+
+        WiFiClient client;
+        if (!connectWithRetry(client, SERVER_HOST, SERVER_PORT)) {
+            log_e("connect failed: %s:%u", SERVER_HOST, (unsigned)SERVER_PORT);
+            return r;
+        }
+        client.setTimeout(HTTP_TIMEOUT_MS);
+
+        String body = "text=";
+        body += urlEncodeForm(text);
+
+        client.print("POST /speak HTTP/1.1\r\n");
+        client.printf("Host: %s:%u\r\n", SERVER_HOST, (unsigned)SERVER_PORT);
+        client.printf("Content-Length: %u\r\n", (unsigned)body.length());
+        client.print("Content-Type: application/x-www-form-urlencoded\r\n");
+        client.print("Accept: audio/wav\r\n");
+        client.print("Connection: close\r\n\r\n");
+        client.print(body);
+
+        String status = client.readStringUntil('\n');
+        int sp1 = status.indexOf(' ');
+        int sp2 = status.indexOf(' ', sp1 + 1);
+        if (sp1 > 0 && sp2 > sp1) {
+            r.http_status = status.substring(sp1 + 1, sp2).toInt();
+        }
+
+        size_t resp_len = 0;
+        while (client.connected() || client.available()) {
+            String line = client.readStringUntil('\n');
+            if (line == "\r" || line.length() == 0) break;
+            line.trim();
+            const int colon = line.indexOf(':');
+            if (colon <= 0) continue;
+
+            String name = line.substring(0, colon);
+            String value = line.substring(colon + 1);
+            name.toLowerCase();
+            value.trim();
+
+            if (name == "content-length") {
+                resp_len = (size_t)value.toInt();
+            } else if (name == "x-stackchan-bot-text") {
+                r.bot_text = urlDecode(value);
+            } else if (name == "x-stackchan-timing") {
+                r.timing = value;
+            } else if (name == "x-stackchan-tts-backend") {
+                r.tts_backend = value;
+            } else if (name == "x-stackchan-emote") {
+                r.emote = value;
+            }
+        }
+        Serial.printf("[HTTP] /speak status=%d len=%u bot='%s' emote='%s'\n",
+                      r.http_status,
+                      (unsigned)resp_len,
+                      r.bot_text.c_str(),
+                      r.emote.length() ? r.emote.c_str() : "neutral");
+
+        if (r.http_status != 200 || resp_len == 0) {
+            log_e("HTTP %d, len=%u", r.http_status, (unsigned)resp_len);
+            client.stop();
+            return r;
+        }
+
+        r.body = static_cast<uint8_t*>(ps_malloc(resp_len));
+        if (!r.body) {
+            log_e("ps_malloc(%u) failed for speak response", (unsigned)resp_len);
+            client.stop();
+            return r;
+        }
+        size_t got = 0;
+        const uint32_t deadline = millis() + HTTP_TIMEOUT_MS;
+        while (got < resp_len && millis() < deadline) {
+            int n = client.read(r.body + got, resp_len - got);
+            if (n > 0) got += n;
+            else delay(1);
+        }
+        r.body_size = got;
+        r.ok = (got == resp_len);
+        if (!r.ok) {
+            free(r.body);
+            r.body = nullptr;
+            r.body_size = 0;
+        }
+        client.stop();
+        return r;
+    }
+
     // 定期発話 / 外部 push を取りに行く (GET /pull)。
     // wait_seconds=0 なら即時応答 (空なら 204)。> 0 で server 側 long-poll。
     // CoreS3 側は待機ループ中に呼ぶので、wait_seconds=0 の短ポーリングが基本。
     static PullResponse pull(uint32_t wait_seconds = 0) {
         PullResponse r;
+        if (!wifiReady()) {
+            log_e("pull skipped: WiFi not connected");
+            return r;
+        }
 
         WiFiClient client;
         if (!connectWithRetry(client, SERVER_HOST, SERVER_PORT)) {
@@ -447,6 +565,28 @@ private:
                 }
             }
             out += (c == '+') ? ' ' : c;
+        }
+        return out;
+    }
+
+    static String urlEncodeForm(const String& plain) {
+        static const char* hex = "0123456789ABCDEF";
+        String out;
+        out.reserve(plain.length() * 3);
+        for (size_t i = 0; i < plain.length(); ++i) {
+            const uint8_t c = (uint8_t)plain[i];
+            if ((c >= 'A' && c <= 'Z') ||
+                (c >= 'a' && c <= 'z') ||
+                (c >= '0' && c <= '9') ||
+                c == '-' || c == '_' || c == '.' || c == '~') {
+                out += (char)c;
+            } else if (c == ' ') {
+                out += '+';
+            } else {
+                out += '%';
+                out += hex[(c >> 4) & 0x0F];
+                out += hex[c & 0x0F];
+            }
         }
         return out;
     }

@@ -35,6 +35,9 @@ def app_with_fakes(monkeypatch_module):
         def transcribe(self, wav: bytes) -> str:
             return "user said something"
 
+        def warmup(self):
+            return None
+
         def status(self):
             return {"ok": True}
 
@@ -344,6 +347,56 @@ def test_vision_capture_returns_wav(client, app_with_fakes, monkeypatch):
     assert r.headers["content-type"].startswith("audio/wav")
     assert unquote(r.headers["x-stackchan-bot-text"]) == "机の上にキーボードがある。"
     assert r.content.startswith(b"RIFF")
+
+
+# ---------------- /chat concurrency ----------------
+
+
+def test_pull_responds_while_chat_is_processing(app_with_fakes):
+    """STT/LLM/TTS が worker スレッドで走っている間も /pull が即応答する。"""
+    import threading
+    import time
+
+    from fastapi.testclient import TestClient
+
+    stt = app_with_fakes.stt
+    original_transcribe = stt.transcribe
+    while app_with_fakes.queue.size() > 0:
+        app_with_fakes.queue._q.get_nowait()
+
+    def slow_transcribe(wav: bytes) -> str:
+        time.sleep(0.35)
+        return "hello"
+
+    stt.transcribe = slow_transcribe  # type: ignore[assignment]
+
+    wav_bytes = b"RIFF" + b"\x00" * 40  # /chat の最小長チェック (44B) を満たす
+    chat_result: dict[str, object] = {}
+
+    def run_chat():
+        with TestClient(app_with_fakes.app) as c:
+            chat_result["response"] = c.post(
+                "/chat",
+                data={"sid": "concurrency-test"},
+                files={"audio": ("a.wav", wav_bytes, "audio/wav")},
+            )
+
+    thread = threading.Thread(target=run_chat)
+    thread.start()
+    time.sleep(0.05)  # /chat が STT スレッドに入るのを待つ
+
+    try:
+        with TestClient(app_with_fakes.app) as c:
+            t0 = time.perf_counter()
+            pull = c.get("/pull?wait=0")
+            elapsed = time.perf_counter() - t0
+        assert pull.status_code == 204
+        assert elapsed < 0.2
+    finally:
+        thread.join(timeout=5)
+        stt.transcribe = original_transcribe  # type: ignore[assignment]
+
+    assert chat_result["response"].status_code == 200  # type: ignore[union-attr]
 
 
 # ---------------- /admin ----------------

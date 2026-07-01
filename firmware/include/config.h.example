@@ -58,6 +58,13 @@ static constexpr uint8_t  SPK_VOLUME = 180; // 0..255
 // 0: Idle 30分後はソフトSleepに入り、タッチ/リモコンで復帰できる。
 // 1: 従来通り deep sleep に入る。環境によっては電源ボタン以外で復帰できない。
 #define POWER_IDLE_DEEP_SLEEP_ENABLED 0
+// Sleep 中に、たまに /speak 経由で寝息・寝言を再生する。
+// 初回は入眠後 45〜150 秒、以後は 2〜6 分ごとのランダム間隔。
+#define SLEEP_MURMUR_ENABLED 1
+#define SLEEP_MURMUR_INITIAL_MIN_MS (45UL * 1000)
+#define SLEEP_MURMUR_INITIAL_MAX_MS (150UL * 1000)
+#define SLEEP_MURMUR_MIN_MS (2UL * 60 * 1000)
+#define SLEEP_MURMUR_MAX_MS (6UL * 60 * 1000)
 
 // ---- SAM2695 MIDI module ------------------------------------
 // UART MIDI 音源をぶら下げる場合は 1 にする。MIDI は 31250 bps。

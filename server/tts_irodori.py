@@ -1,52 +1,28 @@
 """Irodori-TTS-Lite (CUDA) のラッパ。
 
-upstream の `example/run_tts.py` が CLI shape (sys.argv を組んで infer.main()
-を呼び、出力 WAV をファイルに書く形) で、純粋な Python API としての
-synthesize 関数は export されていない。実推論は `irodori_tts.inference_runtime`
-側にある (parent package。Irodori-TTS-Lite はその int4 量子化パッチ層)。
+upstream の `infer.main()` は毎回 `InferenceRuntime.from_key()` でモデルを
+再ロードする CLI ラッパのため、ここでは `irodori_tts.inference_runtime` を
+直接叩いてシングルトンキャッシュ (`get_cached_runtime`) を使う:
 
-ここでは run_tts.py と同じ流れを in-process で再現する:
     1. irodori_tts_lite.configure() + patch() でランタイムをパッチ
     2. resolve_checkpoint() でモデルパスを確定
-    3. tempfile に WAV を書かせるために sys.argv を組んで infer.main() を呼ぶ
-       (Linux なら /dev/shm を優先利用して実ディスク I/O を回避)
-    4. 書き出された WAV を読み戻して 16kHz / mono / PCM16 に整える
+    3. RuntimeKey を 1 回組み立て、get_cached_runtime() で InferenceRuntime を共有
+    4. runtime.synthesize(SamplingRequest(...)) → メモリ上の WAV bytes
+    5. 16 kHz / mono / PCM16 に整えて CoreS3 へ返す
 
 並行性:
-    - infer.main() は sys.argv をグローバルに弄る上 InferenceRuntime をモジュール
-      レベルで共有するため、threading.Lock で直列化する必要がある。
-    - ロックスコープは infer.main() の呼び出しのみに限定し、tempfile 読み取りと
-      _to_16k_mono() の torchaudio resample はロック外で並行実行される。
-
-注意 (TODO):
-    infer.main() の内部で InferenceRuntime が毎回再構築されると、毎呼び出しで
-    モデルロードが走り /chat の応答が秒オーダーで遅くなる。fork 側で
-        irodori_tts.inference_runtime.InferenceRuntime
-    のインスタンスを 1 回だけ作って `synthesize(text) -> waveform` を露出させた
-    ら、本ファイルの `synthesize()` 内で sys.argv を弄っている部分を直接呼び出
-    しに差し替えること (4 行ほどの修正で済む)。
-
-改善点 (このファイルで対処済み):
-    - 一時ファイル (tempfile) を廃止し、SpooledTemporaryFile を使ったメモリ
-      バッファ経由で WAV を受け取ることでディスク I/O を排除した。
-      ただし infer.main() が --output-wav にファイルパスを要求する場合は
-      SpooledTemporaryFile の name 属性 (ディスク上のパス) にフォールバックする。
-    - threading.Lock のスコープを infer.main() 呼び出し部分のみに絞り、
-      変換処理 (_to_16k_mono) はロック外で実行するようにした。
-      これにより並行リクエスト時の待機時間を最小化する。
+    InferenceRuntime.synthesize() は内部 `_infer_lock` で直列化される。
+    `_to_16k_mono()` の torchaudio resample はロック外で並行実行できる。
 """
 
 from __future__ import annotations
 
 import io
 import logging
-import os
-import sys
-import tempfile
 import threading
 import time
 import wave
-from pathlib import Path
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -57,19 +33,16 @@ log = logging.getLogger(__name__)
 
 OUTPUT_SR = 16000  # CoreS3 の I2S 入力に揃える
 
-# Linux の tmpfs (RAM 上のファイルシステム)。あればここに WAV を書いて
-# 物理ディスクへの I/O を回避する。無い OS (mac/Windows) では None。
-_TMPFS_DIR: str | None = "/dev/shm" if os.path.isdir("/dev/shm") else None
+# infer.main() の argparse 既定値 (YosAwed/Irodori-TTS infer.py と揃える)
+_INFER_NUM_STEPS = 40
+_INFER_CFG_GUIDANCE_MODE = "independent"
+_INFER_CFG_SCALE_TEXT = 3.0
+_INFER_CFG_SCALE_CAPTION = 3.0
+_INFER_CFG_SCALE_SPEAKER = 5.0
 
 
 def _patch_reference_encoder_dtype() -> None:
-    """Keep reference-audio latents in the same dtype as the int4/fp16 model.
-
-    Irodori-TTS-Lite runs the quantized checkpoint with fp16 weights, but the
-    reference WAV path can produce float32 latents before the speaker encoder.
-    Cast at the encoder boundary so --ref-wav works without editing the
-    installed package.
-    """
+    """Keep reference-audio latents in the same dtype as the int4/fp16 model."""
     try:
         from irodori_tts.model import ReferenceLatentEncoder
     except Exception:
@@ -92,10 +65,83 @@ def _patch_reference_encoder_dtype() -> None:
     log.info("patched Irodori reference encoder dtype cast")
 
 
+def _resolve_model_device() -> str:
+    from irodori_tts.inference_runtime import default_runtime_device
+
+    device = settings.IRODORI_DEVICE.strip().lower()
+    if device in ("auto", ""):
+        return default_runtime_device()
+    return settings.IRODORI_DEVICE
+
+
+def _build_runtime_key(checkpoint: str):
+    from irodori_tts.inference_runtime import RuntimeKey, default_runtime_device
+
+    device = _resolve_model_device()
+    codec_device = default_runtime_device()
+    return RuntimeKey(
+        checkpoint=str(checkpoint),
+        model_device=device,
+        codec_repo="Aratako/Semantic-DACVAE-Japanese-32dim",
+        model_precision="fp32",
+        codec_device=codec_device,
+        codec_precision="fp32",
+        codec_deterministic_encode=True,
+        codec_deterministic_decode=True,
+        enable_watermark=False,
+        compile_model=False,
+        compile_dynamic=False,
+    )
+
+
+@dataclass(frozen=True)
+class _InferDefaults:
+    """SamplingRequest に渡す infer CLI 既定値の束。"""
+
+    num_steps: int = _INFER_NUM_STEPS
+    cfg_guidance_mode: str = _INFER_CFG_GUIDANCE_MODE
+    cfg_scale_text: float = _INFER_CFG_SCALE_TEXT
+    cfg_scale_caption: float = _INFER_CFG_SCALE_CAPTION
+    cfg_scale_speaker: float = _INFER_CFG_SCALE_SPEAKER
+    cfg_min_t: float = 0.5
+    cfg_max_t: float = 1.0
+    context_kv_cache: bool = True
+    trim_tail: bool = True
+    tail_window_size: int = 20
+    tail_std_threshold: float = 0.05
+    tail_mean_threshold: float = 0.1
+    ref_normalize_db: float | None = -16.0
+    ref_ensure_max: bool = True
+    max_ref_seconds: float = 30.0
+    num_candidates: int = 1
+    decode_mode: str = "sequential"
+
+
+def _tensor_to_wav_bytes(audio: torch.Tensor, sample_rate: int) -> bytes:
+    """InferenceRuntime の波形テンソルを 16-bit PCM WAV bytes へ。"""
+    audio_cpu = audio.detach().to(device="cpu", dtype=torch.float32)
+    if audio_cpu.ndim == 2 and audio_cpu.shape[0] == 1:
+        x = audio_cpu.squeeze(0).numpy()
+    elif audio_cpu.ndim == 2:
+        x = audio_cpu.mean(dim=0).numpy()
+    else:
+        x = audio_cpu.numpy()
+
+    pcm = np.clip(x, -1.0, 1.0)
+    pcm = (pcm * 32767.0).astype("<i2")
+    out = io.BytesIO()
+    with wave.open(out, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sample_rate)
+        w.writeframes(pcm.tobytes())
+    return out.getvalue()
+
+
 class TTS:
     def __init__(self):
         ref_wav = settings.IRODORI_REF_WAV or None
-        device = settings.IRODORI_DEVICE
+        device = _resolve_model_device()
         force_fp16 = bool(settings.IRODORI_FORCE_FP16)
         checkpoint = settings.IRODORI_CHECKPOINT
         seed = settings.IRODORI_SEED
@@ -114,7 +160,11 @@ class TTS:
         self._seed = seed
         self._device = device
         self._force_fp16 = force_fp16
-        self._lock = threading.Lock()
+        self._runtime_key = _build_runtime_key(self._checkpoint)
+        self._infer_defaults = _InferDefaults()
+        self._runtime_lock = threading.Lock()
+        self._runtime = None
+        self._runtime_loads = 0
         self._calls = 0
         self._last_seconds = None
         self._last_infer_ms = None
@@ -137,6 +187,8 @@ class TTS:
             "seed": self._seed,
             "cuda_available": bool(torch.cuda.is_available()),
             "cuda_device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+            "runtime_loaded": self._runtime is not None,
+            "runtime_loads": self._runtime_loads,
             "calls": self._calls,
             "last_seconds": self._last_seconds,
             "last_infer_ms": self._last_infer_ms,
@@ -144,52 +196,78 @@ class TTS:
             "last_total_ms": self._last_total_ms,
         }
 
+    def _get_runtime(self):
+        from irodori_tts.inference_runtime import get_cached_runtime
+
+        with self._runtime_lock:
+            if self._runtime is not None:
+                return self._runtime
+            runtime, reloaded = get_cached_runtime(self._runtime_key)
+            self._runtime = runtime
+            if reloaded:
+                self._runtime_loads += 1
+                log.info(
+                    "Irodori InferenceRuntime loaded (checkpoint=%s, device=%s)",
+                    self._checkpoint,
+                    self._device,
+                )
+            return runtime
+
+    def _synthesize_raw(self, text: str, seconds: float) -> tuple[bytes, float]:
+        from irodori_tts.inference_runtime import SamplingRequest, resolve_cfg_scales
+
+        runtime = self._get_runtime()
+        use_speaker = bool(
+            runtime.model_cfg.use_speaker_condition and self._ref_wav is not None
+        )
+        cfg_scale_text, cfg_scale_caption, cfg_scale_speaker, _ = resolve_cfg_scales(
+            cfg_guidance_mode=self._infer_defaults.cfg_guidance_mode,
+            cfg_scale_text=self._infer_defaults.cfg_scale_text,
+            cfg_scale_caption=self._infer_defaults.cfg_scale_caption,
+            cfg_scale_speaker=self._infer_defaults.cfg_scale_speaker,
+            cfg_scale=None,
+            use_caption_condition=False,
+            use_speaker_condition=use_speaker,
+        )
+        defaults = self._infer_defaults
+        infer_t0 = time.perf_counter()
+        result = runtime.synthesize(
+            SamplingRequest(
+                text=text,
+                ref_wav=self._ref_wav,
+                no_ref=self._ref_wav is None,
+                ref_normalize_db=defaults.ref_normalize_db,
+                ref_ensure_max=defaults.ref_ensure_max,
+                num_candidates=defaults.num_candidates,
+                decode_mode=defaults.decode_mode,
+                seconds=float(seconds),
+                max_ref_seconds=defaults.max_ref_seconds,
+                num_steps=defaults.num_steps,
+                cfg_scale_text=cfg_scale_text,
+                cfg_scale_caption=cfg_scale_caption,
+                cfg_scale_speaker=cfg_scale_speaker,
+                cfg_guidance_mode=defaults.cfg_guidance_mode,
+                cfg_scale=None,
+                cfg_min_t=defaults.cfg_min_t,
+                cfg_max_t=defaults.cfg_max_t,
+                context_kv_cache=defaults.context_kv_cache,
+                seed=self._seed,
+                trim_tail=defaults.trim_tail,
+                tail_window_size=defaults.tail_window_size,
+                tail_std_threshold=defaults.tail_std_threshold,
+                tail_mean_threshold=defaults.tail_mean_threshold,
+            ),
+            log_fn=None,
+        )
+        infer_ms = (time.perf_counter() - infer_t0) * 1000
+        return _tensor_to_wav_bytes(result.audio, result.sample_rate), infer_ms
+
     def synthesize(self, text: str) -> bytes:
         t0 = time.perf_counter()
         seconds = self._estimate_seconds(text)
 
-        # infer.main() は --output-wav にファイルを書くので一時ファイルを用意。
-        # Linux なら /dev/shm に置いて物理ディスク I/O を回避する。
-        with tempfile.NamedTemporaryFile(
-            suffix=".wav", delete=False, dir=_TMPFS_DIR,
-        ) as tmp:
-            tmp_path = tmp.name
+        raw, infer_ms = self._synthesize_raw(text, seconds)
 
-        try:
-            # ロックは infer.main() の呼び出しだけに限定。
-            # tempfile 読み取りと _to_16k_mono() はロック外で並行実行される。
-            with self._lock:
-                import infer
-                infer.FIXED_SECONDS = float(seconds)
-
-                argv = [
-                    sys.argv[0] if sys.argv else "irodori",
-                    "--checkpoint", self._checkpoint,
-                    "--text", text,
-                    "--output-wav", tmp_path,
-                ]
-                if self._ref_wav is None:
-                    argv.append("--no-ref")
-                else:
-                    argv.extend(["--ref-wav", self._ref_wav])
-                if self._seed is not None:
-                    argv.extend(["--seed", str(self._seed)])
-
-                saved = sys.argv
-                sys.argv = argv
-                infer_t0 = time.perf_counter()
-                try:
-                    infer.main()
-                finally:
-                    sys.argv = saved
-                infer_ms = (time.perf_counter() - infer_t0) * 1000
-
-            # ── ロック外 ─────────────────────────────
-            raw = Path(tmp_path).read_bytes()
-        finally:
-            Path(tmp_path).unlink(missing_ok=True)
-
-        # ---- 変換フェーズ (Lock 外) ----------------------------------------
         convert_t0 = time.perf_counter()
         wav_bytes = self._to_16k_mono(raw)
         convert_ms = (time.perf_counter() - convert_t0) * 1000

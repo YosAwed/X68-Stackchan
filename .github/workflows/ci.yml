@@ -76,3 +76,5 @@ jobs:
           grep -q "SERVER_HOST" firmware/include/config.h.example
           grep -q "SERVER_PORT" firmware/include/config.h.example
           grep -q "SERVO_ENABLED" firmware/include/config.h.example
+          grep -q "WiFiManager" firmware/include/wifi_manager.h
+          grep -q "wifiReady" firmware/include/http_client.h

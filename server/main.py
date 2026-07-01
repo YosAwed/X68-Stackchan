@@ -9,6 +9,8 @@
             sid:   セッションID (任意, デフォルト "default")
         → audio/wav を返す。
         → X-Stackchan-* ヘッダにテキストと処理時間を載せる。
+        STT / LLM / TTS は asyncio.to_thread で worker に逃がし、
+        /pull や /enqueue とイベントループを共有しない。
     POST /chat_text
         text を直接 LLM に渡して、応答 audio/wav を返す。
     POST /speak
@@ -323,7 +325,7 @@ async def chat(
 
     try:
         t0 = time.perf_counter()
-        user_text = stt.transcribe(wav_in)
+        user_text = await asyncio.to_thread(stt.transcribe, wav_in)
         timings["stt"] = _elapsed_ms(t0)
     except Exception as e:
         log.exception("STT failed")
@@ -336,7 +338,9 @@ async def chat(
     else:
         try:
             t0 = time.perf_counter()
-            bot_text = _limit_spoken_text(llm.chat(sid, user_text))
+            bot_text = _limit_spoken_text(
+                await asyncio.to_thread(llm.chat, sid, user_text)
+            )
             timings["llm"] = _elapsed_ms(t0)
         except Exception as e:
             log.exception("LLM failed")
@@ -345,7 +349,9 @@ async def chat(
     try:
         t0 = time.perf_counter()
         emote = classify_reaction(user_text, bot_text)
-        wav_out, cache_hit = _synthesize_speech_with_cache_info(bot_text, emote=emote)
+        wav_out, cache_hit = await asyncio.to_thread(
+            _synthesize_speech_with_cache_info, bot_text, emote=emote
+        )
         timings["tts"] = _elapsed_ms(t0)
         if cache_hit:
             timings["tts_cache"] = 1.0
@@ -364,7 +370,7 @@ async def chat(
 
 
 @app.post("/speak")
-def speak(text: str = Form(...)):
+async def speak(text: str = Form(...)):
     timings: dict[str, float] = {}
     total_t0 = time.perf_counter()
     text = text.strip()
@@ -373,7 +379,9 @@ def speak(text: str = Form(...)):
     try:
         t0 = time.perf_counter()
         emote = classify_emote(text)
-        wav_out, cache_hit = _synthesize_speech_with_cache_info(text, emote=emote)
+        wav_out, cache_hit = await asyncio.to_thread(
+            _synthesize_speech_with_cache_info, text, emote=emote
+        )
         timings["tts"] = _elapsed_ms(t0)
         if cache_hit:
             timings["tts_cache"] = 1.0
@@ -385,7 +393,7 @@ def speak(text: str = Form(...)):
 
 
 @app.post("/chat_text")
-def chat_text(text: str = Form(...), sid: str = Form("default")):
+async def chat_text(text: str = Form(...), sid: str = Form("default")):
     timings: dict[str, float] = {}
     total_t0 = time.perf_counter()
     text = text.strip()
@@ -393,7 +401,7 @@ def chat_text(text: str = Form(...), sid: str = Form("default")):
         raise HTTPException(status_code=400, detail="text is empty")
     try:
         t0 = time.perf_counter()
-        bot_text = _limit_spoken_text(llm.chat(sid, text))
+        bot_text = _limit_spoken_text(await asyncio.to_thread(llm.chat, sid, text))
         timings["llm"] = _elapsed_ms(t0)
     except Exception as e:
         log.exception("LLM failed")
@@ -401,7 +409,9 @@ def chat_text(text: str = Form(...), sid: str = Form("default")):
     try:
         t0 = time.perf_counter()
         emote = classify_reaction(text, bot_text)
-        wav_out, cache_hit = _synthesize_speech_with_cache_info(bot_text, emote=emote)
+        wav_out, cache_hit = await asyncio.to_thread(
+            _synthesize_speech_with_cache_info, bot_text, emote=emote
+        )
         timings["tts"] = _elapsed_ms(t0)
         if cache_hit:
             timings["tts_cache"] = 1.0
