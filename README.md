@@ -42,10 +42,12 @@ M5Stack 公式スタックちゃん (CoreS3 SE) を、X68000 擬人化キャラ 
 | **頭頂を撫でた直後**           | **F_BASHFUL (はにかみ)**                          | **F6→A6→C7 「テロリーン♪」 + 薄ピンク LED** |
 | **頭頂を撫で続けて 1.5 秒〜**  | **F_LAUGH_EYES_CLOSED (とろけ笑い)**             | **暖オレンジ LED**                    |
 | **頭頂を撫で続けて 3 秒〜**    | **F_SLEEPING (Zzz 夢見心地)**                     | **紫マゼンタ LED**                    |
+| **Sleep 中・たまに**           | **F_SLEEPING + sleepy 口パク**                    | **寝息 / 寝言を `/speak` で再生**      |
 | 頭から手を離した               | F_SOFT_SMILE 600ms → Idle                         | LED 消灯                              |
 | Wi-Fi 失敗 / サーバ 5xx 等     | F_CONCERNED / F_DIZZY / F_BORED 等                 | 失敗系ビープ (種類別)                |
 
 LED の 12 個は全て `M5StackChan.showRgbColor()` で同色制御、撫で中は 2.5Hz の sin で脈動する。
+Sleep に入った後は、初回 45〜150 秒、その後 2〜6 分ごとのランダム間隔で、寝息や短い寝言を母艦の `/speak` へ投げて再生する。`OFFLINE_MODE=1` や hard deep sleep 中は発話しない。
 
 ### 最小確認手順 (段階的に切り分け)
 
@@ -80,9 +82,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-irodori-
 ```
 
 - 通常会話は CoreS3 → 母艦の **要求-応答** (`POST /chat`)
+- Sleep 中の寝息 / 寝言は CoreS3 → 母艦の **短文 TTS** (`POST /speak`)
 - 定期発話 / 外部 push は母艦 → CoreS3 を **long-poll** で実現 (`GET /pull`、CoreS3 が Idle 中に短ポーリング)
 - 外部システム (Discord bot / curl など) からは `X-Stackchan-Token` 付きの `POST /enqueue` で同じキューに発話を積める
-- 頭頂タッチセンサー (Si12T、I2C 接続) は **M5StackChan-BSP** ライブラリ経由で読む
+- 頭頂タッチセンサー (Si12T、I2C 接続) は **M5StackChan-BSP** ライブラリ経由で強度値を読み、撫で / 長撫でを判定する
 
 ## ディレクトリ
 
@@ -101,7 +104,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-irodori-
 │   ├── include/
 │   │   ├── config.h.example   # Wi-Fi / 母艦 LAN IP / OFFLINE_MODE / サーボ / タイムアウト
 │   │   ├── audio_recorder.h   # 内蔵 PDM マイク録音 + overflow 自動停止
-│   │   ├── http_client.h      # multipart で /chat に POST、GET /pull で long-poll
+│   │   ├── http_client.h      # multipart で /chat、text で /speak、GET /pull で long-poll
+│   │   ├── touch_handler.h    # BSP の Si12T 強度値から Swipe / Pet / Long Pet を判定
 │   │   ├── servo_controller.h # Feetech SCS0009 シリアルサーボ ×2 (Yaw/Pitch)
 │   │   ├── avatar_state.h     # 状態 enum (Boot / Idle / Listening / Thinking / Speaking / Headpat / Error)
 │   │   ├── pekeko_theme.h     # X68000 風スプラッシュ
@@ -212,6 +216,8 @@ cp include/config.h.example include/config.h
 - `SERVER_HOST` — 母艦の **LAN IP** (`ipconfig | findstr IPv4` / `ipconfig getifaddr en0` で確認、`localhost` は不可)
 - `OFFLINE_MODE` — **`1` にすると Wi-Fi/サーバ無しで起動 → 表情アニメや頭撫でだけ確認できる**。本番運用は `0`
 - `SERVO_ENABLED` — サーボ未接続なら `0` でビルド可
+- `POWER_IDLE_DEEP_SLEEP_ENABLED` — 長時間 Idle で本当に deep sleep へ落とす場合だけ `1`。Sleep 中の寝息 / 寝言も止まるので、通常は `0` 推奨
+- `SLEEP_MURMUR_ENABLED` / `SLEEP_MURMUR_*_MS` — Sleep 中の寝息 / 寝言。デフォルトは初回 45〜150 秒、以後 2〜6 分間隔
 
 ### 4. CoreS3 SE に焼く
 
@@ -259,6 +265,7 @@ python -m serial.tools.miniterm COM3 115200
 - 起動チャイム「ピロリロロ〜ン」が鳴って、Human68k 風スプラッシュ → 手振り顔 → 中立顔へ
 - 4〜8 秒ごとにまばたき / 8〜15 秒ごとにマイクロ表情がチラッと
 - **頭頂を触る**と「テロリーン♪」とはにかみ顔 + ピンク LED、撫で続けると 1.5s でとろけ笑い、3s で Zzz 寝顔へ
+- Sleep に入ったまま 45〜150 秒ほど待つと、たまに「すう、すう。」や「むにゃ……」のような寝息 / 寝言を喋る
 - 画面の下をタッチで録音開始 (OFFLINE_MODE 時はサーバに送らず擬似応答)
 
 ### 6. (本番運用) 母艦サーバを立てる
@@ -278,14 +285,16 @@ python -m serial.tools.miniterm COM3 115200
 | 画面下を触っても録音にならない              | M5Unified の virtual BtnA はデフォルト無効。本リポは `M5.Touch.getDetail(0).isPressed()` を直接読む実装に置換済み |
 | 起動直後に `LittleFS init failed` が画面に残る | LittleFS が空 (face JPG 未書き込み)。`pio run -t buildfs` → 0x610000 に焼き直す                |
 | 30 秒おきに勝手にリセット                  | 旧版で Wi-Fi 未初期化のまま `/pull` した、または接続中に `WiFi.begin()` を重ねた。最新版は `wifi_manager.h` + `ChatClient::wifiReady()` で防止。`OFFLINE_MODE=1` でも同様に安全 |
+| `Wire.cpp: NULL TX buffer pointer` が連続する | 旧版で Si12T を生 I2C 読みしていた時の症状。最新版は M5StackChan-BSP の `TouchSensor.getIntensities()` 経由なので、再ビルドして焼き直す |
+| Sleep 中に寝息 / 寝言を言わない              | Soft Sleep 中だけ動作する。初回は 45〜150 秒待つ。`OFFLINE_MODE=1`、Wi-Fi 未接続、母艦 `/speak` 不通、または `POWER_IDLE_DEEP_SLEEP_ENABLED=1` の hard deep sleep では喋らない |
 | 表情遷移時に顔位置がズレる / 下端に白い線  | `firmware/tools/align_face_bottoms.py` を回して `firmware/data/` を再生成 → `buildfs` で焼き直し |
 
 ## 今のステータス
 
 - 母艦 (Windows + WSL2 + NVIDIA GPU) 側のセットアップ完了・動作確認済み (STT / LLM / TTS パイプライン疎通)
-- CoreS3 SE ファームウェア: 録音 / 表情 / サーボ / 会話 / 定期発話受信 (`/pull`) / 頭撫で連動 まで実装済
+- CoreS3 SE ファームウェア: 録音 / 表情 / サーボ / 会話 / 定期発話受信 (`/pull`) / Sleep 中の寝息・寝言 (`/speak`) / 頭撫で連動 まで実装済
 - Feetech SCS0009 シリアルサーボ ×2 (Yaw=ID1 / Pitch=ID2、UART GPIO6/7 で 1 Mbps) で首振りを実装。PWM SG90 から差し替え済
-- Si12T (頭頂 I2C タッチ) を M5StackChan-BSP 経由で読み、撫で時間に応じて F_BASHFUL → F_LAUGH_EYES_CLOSED → F_SLEEPING の段階遷移 + RGB LED 12 個の脈動演出
+- Si12T (頭頂 I2C タッチ) を M5StackChan-BSP 経由の強度値で読み、撫で時間に応じて F_BASHFUL → F_LAUGH_EYES_CLOSED → F_SLEEPING の段階遷移 + RGB LED 12 個の脈動演出
 - 顔 JPG (`firmware/data/face_*.jpg`) は `align_face_bottoms.py` で 2D 中心揃え済 (表情遷移時の位置ズレ・白ライン解消)
 - 母艦は当初の Mac mini (VOICEVOX) から Windows + WSL2 + NVIDIA GPU (Irodori-TTS-Lite) に構成変更済 (VOICEVOX 経路も維持)
 - Irodori-TTS-Lite は pip でインストール可能な [YosAwed/Irodori-TTS-Lite](https://github.com/YosAwed/Irodori-TTS-Lite) フォークを使用
@@ -312,6 +321,7 @@ python -m serial.tools.miniterm COM3 115200
 - [x] アイドル中のまばたき (4〜8 秒間隔) + マイクロ表情 (5 種ローテーション、8〜15 秒間隔)
 - [x] LCD タッチ ↔ M5.BtnA 不整合を回避 (M5.Touch を直接読む)
 - [x] 頭頂 Si12T による headpat 反応 + RGB LED 12 個の連動演出 (段階的とろけ顔 + 脈動)
+- [x] Sleep 中の寝息 / 寝言: Soft Sleep 中に `/speak` で短い定型文をたまに再生
 - [x] 顔 JPG の 2D 中心揃え (`align_face_bottoms.py`) で表情遷移時の位置ズレを解消
 - [x] OFFLINE_MODE: Wi-Fi/サーバ無しで起動して表情アニメ・頭撫で・LED 演出を確認する開発用フラグ
 - [x] 電源管理: 低電池監視と Idle 長時間継続時の deep sleep (`power.h`)
