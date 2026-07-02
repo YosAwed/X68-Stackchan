@@ -121,6 +121,19 @@ def test_persistent_mode_respects_history_turns_on_hydrate(tmp_path: Path):
     assert rows[-1] == ("assistant", "a9")
 
 
+def test_chat_with_remember_false_leaves_no_history(tmp_path: Path, fake_ollama_response):
+    """remember=False (vision 用 one-shot) は in-memory にも SQLite にも残らない。"""
+    llm = _make_llm(tmp_path, persistent=True)
+    with patch.object(llm._client, "post", return_value=fake_ollama_response):
+        out = llm.chat("vision", "何が見える?", remember=False)
+    assert out == "ぼっとの応答だよ"
+    assert "vision" not in llm._history
+
+    # 再起動相当の別インスタンスでも履歴が無い (= DB にも書かれていない)
+    llm2 = _make_llm(tmp_path, persistent=True)
+    assert "vision" not in llm2._history
+
+
 def test_reset_clears_both_memory_and_disk(tmp_path: Path, fake_ollama_response):
     llm = _make_llm(tmp_path, persistent=True)
     with patch.object(llm._client, "post", return_value=fake_ollama_response):

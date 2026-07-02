@@ -76,6 +76,7 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "info"
     MAX_AUDIO_BYTES: int = 2 * 1024 * 1024
     MAX_SPEAK_CHARS: int = 70
+    WAKE_WORDS: str = "ぺけ子,ペケ子,ぺけこ,ペケコ,スタックちゃん"
 
     # ---- Scheduler / external push ----
     SCHEDULE_ENABLED: int = Field(default=0, ge=0, le=1)

@@ -42,7 +42,10 @@ public:
         // Lift を漏らさない (シェイク直後の誤「持ち上げ」反応を防ぐ)。
         if (shake_cooling) return Event::None;
         if (mag > LIFT_G) {
-            if (now - last_lift_ms_ < LIFT_COOL) return Event::None;
+            // last_lift_ms_ == 0 は未発火 (起動直後 1.5 秒を誤って抑制しない)
+            if (last_lift_ms_ != 0 && now - last_lift_ms_ < LIFT_COOL) {
+                return Event::None;
+            }
             last_lift_ms_ = now;
             return Event::Lift;
         }

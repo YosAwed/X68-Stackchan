@@ -31,6 +31,9 @@ class STT:
         self.beam_size = beam_size
         self.model = None
         self._lock = threading.Lock()
+        # CTranslate2 の同一モデルへの並行推論は未定義動作になり得るため、
+        # transcribe 全体を直列化する (/chat と /wake が同時に来るケースがある)。
+        self._infer_lock = threading.Lock()
 
     def _model(self) -> WhisperModel:
         if self.model is not None:
@@ -66,13 +69,14 @@ class STT:
         """WAV (RIFF) のバイト列を渡してテキストを返す"""
         # faster-whisper は file path / file-like / numpy を受ける
         buf = io.BytesIO(wav_bytes)
-        segments, info = self._model().transcribe(
-            buf,
-            language=self.language,
-            beam_size=self.beam_size,
-            vad_filter=self.vad_filter,
-            condition_on_previous_text=False,
-        )
-        text = "".join(seg.text for seg in segments).strip()
+        with self._infer_lock:
+            segments, info = self._model().transcribe(
+                buf,
+                language=self.language,
+                beam_size=self.beam_size,
+                vad_filter=self.vad_filter,
+                condition_on_previous_text=False,
+            )
+            text = "".join(seg.text for seg in segments).strip()
         log.info("STT (%.2fs): %s", info.duration, text)
         return text

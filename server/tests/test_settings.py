@@ -15,7 +15,9 @@ from settings import settings as _global_settings
 
 
 def test_settings_defaults_and_types():
-    s = Settings()
+    # ローカルの server/.env に影響されないよう env_file を無効化して
+    # 「コード上のデフォルト値」だけを検証する。
+    s = Settings(_env_file=None)
     assert s.WHISPER_MODEL == "small"
     assert s.HISTORY_TURNS == 6
     assert s.MAX_SESSIONS == 16

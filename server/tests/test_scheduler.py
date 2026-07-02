@@ -112,7 +112,13 @@ def test_from_file_missing_returns_empty(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_fire_fixed_pushes_to_queue():
+async def test_fire_fixed_pushes_to_queue(monkeypatch):
+    # emoji プレフィクスは irodori バックエンドの時だけ付くので、
+    # ローカル .env の TTS_BACKEND に依存しないよう固定する。
+    import scheduler as scheduler_module
+    monkeypatch.setattr(scheduler_module.settings, "TTS_BACKEND", "irodori")
+    monkeypatch.setattr(scheduler_module.settings, "IRODORI_EMOJI_STYLE", 1)
+
     llm, tts, q = FakeLLM(), FakeTTS(), UtteranceQueue(4)
     s = Scheduler(llm, tts, q)
     t = ScheduledTrigger(name="fx", cron="* * * * *",
@@ -179,6 +185,28 @@ def test_record_error_sets_last_error():
                          kind="fixed", text="hi")
     t.record_error(RuntimeError("boom"))
     assert t.last_error == "RuntimeError: boom"
+
+
+@pytest.mark.asyncio
+async def test_fire_records_error_when_commit_fails(monkeypatch):
+    """commit がキュー満杯で失敗したら発火成功として数えない。"""
+    llm, tts, q = FakeLLM(), FakeTTS(), UtteranceQueue(4)
+    s = Scheduler(llm, tts, q)
+    t = ScheduledTrigger(name="drop", cron="* * * * *",
+                         kind="fixed", text="hi")
+
+    class FailingReservation:
+        def commit(self, u):
+            return False
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(q, "reserve_nowait", lambda: FailingReservation())
+    await s._fire(t)
+    assert t.fire_count == 0
+    assert t.last_fire is None
+    assert t.last_error == "RuntimeError: utterance queue full"
 
 
 @pytest.mark.asyncio

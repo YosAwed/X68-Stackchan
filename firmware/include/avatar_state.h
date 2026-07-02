@@ -8,6 +8,7 @@ namespace stackchan {
 enum class State {
     Boot,
     Idle,
+    WakeListening,
     Listening,
     Thinking,
     Speaking,

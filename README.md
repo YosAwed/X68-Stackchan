@@ -37,6 +37,7 @@ M5Stack 公式スタックちゃん (CoreS3 SE) を、X68000 擬人化キャラ 
 | アイドル中・マイクロ表情 (8〜15秒) | 5択 (F_SOFT_SMILE / F_SPARKLE_EYES / F_BASHFUL / F_BORED / F_YAWN_SMALL) を 800ms | —                          |
 | LCD タッチした瞬間             | F_SURPRISED「ハッ」を 150ms                       | —                                    |
 | 録音中                         | F_QUESTION (はてな)                              | —                                    |
+| ウェイクワード検出後           | F_QUESTION (はてな)                              | D6→G6 「ピロン♪」後に本録音へ        |
 | 応答音声直前                   | —                                                | D6→G6 「ピロン♪」 (ack beep)        |
 | 応答音声再生中                 | 口パク 3 段階 (RMS 高さで closed / open / wide)、emote 別ペア | —                            |
 | **頭頂を撫でた直後**           | **F_BASHFUL (はにかみ)**                          | **F6→A6→C7 「テロリーン♪」 + 薄ピンク LED** |
@@ -56,6 +57,7 @@ Sleep に入った後は、初回 45〜150 秒、その後 2〜6 分ごとのラ
 1. **(母艦無しでも OK)** `OFFLINE_MODE=1` で焼く → 起動チャイム・スプラッシュ・顔・まばたき・マイクロ表情・頭撫で反応まで確認
 2. **母艦サーバへの到達確認** — `OFFLINE_MODE=0` に戻して uvicorn を起こす。シリアルログに `WiFi connected` と `/pull` の応答が出ることを見る
 3. **会話 (push-to-talk)** — 画面下をタッチ長押し → 録音 → STT → LLM → TTS が往復する
+4. **ウェイクワード** — `WAKE_WORD_ENABLED=1` にして「ぺけ子」「スタックちゃん」などと呼ぶ → ack beep 後に本録音へ入る
 
 Windows + WSL2 で Irodori サーバを CoreS3 から使う場合は、WSL の localhost 転送を LAN に出すプロキシも必要。下のスクリプトで uvicorn と LAN プロキシをまとめて起動できる。
 
@@ -70,8 +72,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-irodori-
 │  M5Stack CoreS3 SE          │  ──── multipart/form-data ─► │  母艦 PC / Mac              │
 │  ─ M5Unified + Avatar       │     録音 WAV (16k mono)       │  FastAPI                    │
 │  ─ 内蔵 PDM マイクで録音    │                               │   /chat        (会話)       │
-│  ─ LCD タッチで push-to-talk │                              │   /pull        (定期発話)   │
+│  ─ LCD タッチで push-to-talk │                              │   /wake        (呼びかけ検出) │
 │  ─ 頭頂 Si12T で head-pat   │                               │   /enqueue     (外部 push)  │
+│  ─ ウェイクワード待ち受け   │                               │   /pull        (定期発話)   │
 │  ─ 内蔵スピーカで再生       │  ◄──── audio/wav (応答) ─────│                             │
 │  ─ 口パク同期で Avatar 表情 │                               │   1. faster-whisper (STT)   │
 │  ─ サーボ (Yaw/Pitch) で首振り │                            │   2. Ollama (LLM)           │
@@ -82,6 +85,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-irodori-
 ```
 
 - 通常会話は CoreS3 → 母艦の **要求-応答** (`POST /chat`)
+- ウェイクワードは CoreS3 → 母艦の **短時間 STT 判定** (`POST /wake`)。検出後に ack beep を鳴らして本録音へ入る
 - Sleep 中の寝息 / 寝言は CoreS3 → 母艦の **短文 TTS** (`POST /speak`)
 - 定期発話 / 外部 push は母艦 → CoreS3 を **long-poll** で実現 (`GET /pull`、CoreS3 が Idle 中に短ポーリング)
 - 外部システム (Discord bot / curl など) からは `X-Stackchan-Token` 付きの `POST /enqueue` で同じキューに発話を積める
@@ -104,7 +108,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-irodori-
 │   ├── include/
 │   │   ├── config.h.example   # Wi-Fi / 母艦 LAN IP / OFFLINE_MODE / サーボ / タイムアウト
 │   │   ├── audio_recorder.h   # 内蔵 PDM マイク録音 + overflow 自動停止
-│   │   ├── http_client.h      # multipart で /chat、text で /speak、GET /pull で long-poll
+│   │   ├── http_client.h      # multipart で /chat /wake、text で /speak、GET /pull で long-poll
 │   │   ├── touch_handler.h    # BSP の Si12T 強度値から Swipe / Pet / Long Pet を判定
 │   │   ├── servo_controller.h # Feetech SCS0009 シリアルサーボ ×2 (Yaw/Pitch)
 │   │   ├── avatar_state.h     # 状態 enum (Boot / Idle / Listening / Thinking / Speaking / Headpat / Error)
@@ -216,6 +220,8 @@ cp include/config.h.example include/config.h
 - `SERVER_HOST` — 母艦の **LAN IP** (`ipconfig | findstr IPv4` / `ipconfig getifaddr en0` で確認、`localhost` は不可)
 - `OFFLINE_MODE` — **`1` にすると Wi-Fi/サーバ無しで起動 → 表情アニメや頭撫でだけ確認できる**。本番運用は `0`
 - `SERVO_ENABLED` — サーボ未接続なら `0` でビルド可
+- `WAKE_WORD_ENABLED` — `1` で Idle 中に短い音声片を `/wake` へ送り、呼びかけ検出後に本録音へ入る。タッチ / リモコン PTT は併用可能
+- `WAKE_LISTEN_MS` / `WAKE_POLL_INTERVAL_MS` — ウェイクワード待ち受けの録音窓とポーリング間隔
 - `POWER_IDLE_DEEP_SLEEP_ENABLED` — 長時間 Idle で本当に deep sleep へ落とす場合だけ `1`。Sleep 中の寝息 / 寝言も止まるので、通常は `0` 推奨
 - `SLEEP_MURMUR_ENABLED` / `SLEEP_MURMUR_*_MS` — Sleep 中の寝息 / 寝言。デフォルトは初回 45〜150 秒、以後 2〜6 分間隔
 
@@ -266,6 +272,7 @@ python -m serial.tools.miniterm COM3 115200
 - 4〜8 秒ごとにまばたき / 8〜15 秒ごとにマイクロ表情がチラッと
 - **頭頂を触る**と「テロリーン♪」とはにかみ顔 + ピンク LED、撫で続けると 1.5s でとろけ笑い、3s で Zzz 寝顔へ
 - Sleep に入ったまま 45〜150 秒ほど待つと、たまに「すう、すう。」や「むにゃ……」のような寝息 / 寝言を喋る
+- `WAKE_WORD_ENABLED=1` の場合は、Idle 中に「ぺけ子」「スタックちゃん」などと呼ぶと ack beep の後に録音へ入る
 - 画面の下をタッチで録音開始 (OFFLINE_MODE 時はサーバに送らず擬似応答)
 
 ### 6. (本番運用) 母艦サーバを立てる
@@ -287,12 +294,13 @@ python -m serial.tools.miniterm COM3 115200
 | 30 秒おきに勝手にリセット                  | 旧版で Wi-Fi 未初期化のまま `/pull` した、または接続中に `WiFi.begin()` を重ねた。最新版は `wifi_manager.h` + `ChatClient::wifiReady()` で防止。`OFFLINE_MODE=1` でも同様に安全 |
 | `Wire.cpp: NULL TX buffer pointer` が連続する | 旧版で Si12T を生 I2C 読みしていた時の症状。最新版は M5StackChan-BSP の `TouchSensor.getIntensities()` 経由なので、再ビルドして焼き直す |
 | Sleep 中に寝息 / 寝言を言わない              | Soft Sleep 中だけ動作する。初回は 45〜150 秒待つ。`OFFLINE_MODE=1`、Wi-Fi 未接続、母艦 `/speak` 不通、または `POWER_IDLE_DEEP_SLEEP_ENABLED=1` の hard deep sleep では喋らない |
+| ウェイクワードで起きない                    | `WAKE_WORD_ENABLED=1`、母艦 `/wake` 到達、Whisper STT のロード完了を確認。サーバ側の検出語は `.env` の `WAKE_WORDS` で変更できる |
 | 表情遷移時に顔位置がズレる / 下端に白い線  | `firmware/tools/align_face_bottoms.py` を回して `firmware/data/` を再生成 → `buildfs` で焼き直し |
 
 ## 今のステータス
 
 - 母艦 (Windows + WSL2 + NVIDIA GPU) 側のセットアップ完了・動作確認済み (STT / LLM / TTS パイプライン疎通)
-- CoreS3 SE ファームウェア: 録音 / 表情 / サーボ / 会話 / 定期発話受信 (`/pull`) / Sleep 中の寝息・寝言 (`/speak`) / 頭撫で連動 まで実装済
+- CoreS3 SE ファームウェア: 録音 / 表情 / サーボ / 会話 / ウェイクワード (`/wake`) / 定期発話受信 (`/pull`) / Sleep 中の寝息・寝言 (`/speak`) / 頭撫で連動 まで実装済
 - Feetech SCS0009 シリアルサーボ ×2 (Yaw=ID1 / Pitch=ID2、UART GPIO6/7 で 1 Mbps) で首振りを実装。PWM SG90 から差し替え済
 - Si12T (頭頂 I2C タッチ) を M5StackChan-BSP 経由の強度値で読み、撫で時間に応じて F_BASHFUL → F_LAUGH_EYES_CLOSED → F_SLEEPING の段階遷移 + RGB LED 12 個の脈動演出
 - 顔 JPG (`firmware/data/face_*.jpg`) は `align_face_bottoms.py` で 2D 中心揃え済 (表情遷移時の位置ズレ・白ライン解消)
@@ -317,6 +325,7 @@ python -m serial.tools.miniterm COM3 115200
 - [x] X68 風起動チャイム + 応答前 ack beep (2 音「ピロン♪」) + 頭撫でチャイム (`chime.h`)
 - [x] HTTP エラーの粒度向上 (`413` / `5xx` / タイムアウト で表情とビープを出し分け)
 - [x] 録音バッファ上限到達時の自動停止と通知 (`audio_recorder::isFull()` + overflow beep)
+- [x] ウェイクワード化: Idle 中に短い WAV を `/wake` へ送り、検出後に本録音へ入る
 - [x] 定期発話 / 外部 push の受信経路 (`/pull` ロングポール)
 - [x] アイドル中のまばたき (4〜8 秒間隔) + マイクロ表情 (5 種ローテーション、8〜15 秒間隔)
 - [x] LCD タッチ ↔ M5.BtnA 不整合を回避 (M5.Touch を直接読む)
@@ -325,7 +334,5 @@ python -m serial.tools.miniterm COM3 115200
 - [x] 顔 JPG の 2D 中心揃え (`align_face_bottoms.py`) で表情遷移時の位置ズレを解消
 - [x] OFFLINE_MODE: Wi-Fi/サーバ無しで起動して表情アニメ・頭撫で・LED 演出を確認する開発用フラグ
 - [x] 電源管理: 低電池監視と Idle 長時間継続時の deep sleep (`power.h`)
-- [ ] ウェイクワード化 (現状は LCD タッチで push-to-talk)
-- [ ] チャイムを本格的に FM 風にする (M5Unified の波形カスタマイズ or 短い PCM サンプル)
 - [ ] Si12T のスワイプ方向検出 (`wasSwipedForward` / `wasSwipedBackward`) を使った「逆撫で → 困り顔」演出
 - [x] 過去の WiFi 接続中 `xQueueSemaphoreTake assert` クラッシュ: `wifi_manager.h` で STA 初期化/`WiFi.begin()` の重複を抑止し、`ChatClient` は未接続時に TCP を開かない

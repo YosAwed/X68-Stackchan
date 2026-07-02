@@ -15,6 +15,8 @@
         text を直接 LLM に渡して、応答 audio/wav を返す。
     POST /speak
         text を直接 TTS に渡して、audio/wav を返す。
+    POST /wake
+        短い WAV を STT してウェイクワードだけ判定する。
 
 起動:
     uvicorn main:app --host 0.0.0.0 --port 8000
@@ -121,6 +123,25 @@ _scheduler: Scheduler | None = None
 _vision: VisionWatcher | None = None
 
 
+def _normalize_wake_text(text: str) -> str:
+    return re.sub(r"[\s、。,.!！?？「」『』（）()・ー\-_]+", "", text).lower()
+
+
+def _wake_words() -> list[str]:
+    return [
+        w
+        for w in (_normalize_wake_text(part) for part in settings.WAKE_WORDS.split(","))
+        if w
+    ]
+
+
+def _is_wake_word(text: str) -> bool:
+    normalized = _normalize_wake_text(text)
+    if not normalized:
+        return False
+    return any(word in normalized for word in _wake_words())
+
+
 async def _prewarm_tts():
     """起動直後にダミー合成を 1 回走らせて初回ペナルティを潰す。
 
@@ -153,13 +174,16 @@ async def _prewarm_stt():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _scheduler, _vision
+    # prewarm タスクは参照を保持し、shutdown 時に cancel + 待機する
+    # (GC による突然のタスク破棄と、推論途中の kill を避ける)。
+    prewarm_tasks: list[asyncio.Task] = []
     if settings.is_whisper_prewarm_enabled():
-        asyncio.create_task(_prewarm_stt())
+        prewarm_tasks.append(asyncio.create_task(_prewarm_stt()))
     # 起動時に TTS を一度叩いて初回ペナルティを消す。
     # TTS_PREWARM=0 で無効化可能 (CI など TTS が動かない環境用)。
     if settings.is_tts_prewarm_enabled():
         # 別タスクで走らせて lifespan の yield を待たせない (起動を遅らせない)。
-        asyncio.create_task(_prewarm_tts())
+        prewarm_tasks.append(asyncio.create_task(_prewarm_tts()))
     if settings.is_scheduler_enabled():
         path = Path(settings.SCHEDULE_FILE)
         # silent_for_minutes 条件付きトリガが LLM の履歴 DB を参照できるように、
@@ -183,10 +207,16 @@ async def lifespan(app: FastAPI):
     else:
         log.info("vision disabled (set VISION_ENABLED=1 to enable)")
     yield
+    for task in prewarm_tasks:
+        task.cancel()
+    if prewarm_tasks:
+        await asyncio.gather(*prewarm_tasks, return_exceptions=True)
     if _vision is not None:
         await _vision.stop()
     if _scheduler is not None:
         await _scheduler.stop()
+    # httpx コネクションと履歴 DB を明示クローズ (FD リーク防止)。
+    llm.close()
 
 
 app = FastAPI(title="Stack-chan server", version="0.1.0", lifespan=lifespan)
@@ -289,6 +319,19 @@ def _authorize_enqueue(token: str | None) -> None:
         raise HTTPException(status_code=401, detail="invalid enqueue token")
 
 
+def _authorize_protected(token: str | None) -> None:
+    """/reset や /vision/capture 用のゆるいトークン保護。
+
+    ENQUEUE_TOKEN が未設定ならローカル運用とみなして素通しする
+    (/enqueue と違い、無効化すると開発時に不便なため)。
+    設定済みなら X-Stackchan-Token の一致を必須にする。
+    """
+    if not ENQUEUE_TOKEN:
+        return
+    if not token or not hmac.compare_digest(token, ENQUEUE_TOKEN):
+        raise HTTPException(status_code=401, detail="invalid token")
+
+
 @app.get("/health")
 def health():
     return {"ok": True}
@@ -305,6 +348,43 @@ def ready():
         "ok": all(c.get("ok", False) for c in components.values()),
         "components": components,
     }
+
+
+@app.post("/wake")
+async def wake(audio: UploadFile = File(...)):
+    timings: dict[str, float] = {}
+    total_t0 = time.perf_counter()
+    if audio.content_type not in ("audio/wav", "audio/x-wav", "application/octet-stream"):
+        log.warning("Unexpected wake content_type=%s, accepting anyway", audio.content_type)
+
+    wav_in = await audio.read()
+    if len(wav_in) < 44:
+        raise HTTPException(status_code=400, detail="audio too short")
+    if len(wav_in) > MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=413, detail="audio too large")
+
+    try:
+        t0 = time.perf_counter()
+        text = await asyncio.to_thread(stt.transcribe, wav_in)
+        timings["stt"] = _elapsed_ms(t0)
+    except Exception as e:
+        log.exception("Wake STT failed")
+        return JSONResponse(status_code=500, content={"error": f"stt: {e}"})
+
+    timings["total"] = _elapsed_ms(total_t0)
+    matched = _is_wake_word(text)
+    log.info("Wake check matched=%s text=%r", matched, text)
+    headers = {
+        "X-Stackchan-User-Text": quote(text, safe=""),
+        "X-Stackchan-Timing": _timing_header(timings),
+    }
+    if not matched:
+        return Response(status_code=204, headers=headers)
+    return JSONResponse(
+        status_code=200,
+        content={"wake": True, "text": text},
+        headers=headers,
+    )
 
 
 @app.post("/chat")
@@ -423,7 +503,11 @@ async def chat_text(text: str = Form(...), sid: str = Form("default")):
 
 
 @app.post("/reset")
-def reset(sid: str = Form("default")):
+def reset(
+    sid: str = Form("default"),
+    x_stackchan_token: str | None = Header(None),
+):
+    _authorize_protected(x_stackchan_token)
     llm.reset(sid)
     return {"ok": True}
 
@@ -474,7 +558,8 @@ async def enqueue(
         raise HTTPException(503, "utterance queue full")
     try:
         if via_llm:
-            bot_text = await asyncio.to_thread(llm.chat, sid, text)
+            # /chat と同様に発話長を制限する (CoreS3 の再生安定性のため)。
+            bot_text = _limit_spoken_text(await asyncio.to_thread(llm.chat, sid, text))
         else:
             bot_text = text
         if not bot_text:
@@ -517,8 +602,9 @@ def vision_status():
 
 
 @app.post("/vision/capture")
-async def vision_capture():
+async def vision_capture(x_stackchan_token: str | None = Header(None)):
     """Capture one camera still now and return the spoken response as WAV."""
+    _authorize_protected(x_stackchan_token)
     total_t0 = time.perf_counter()
     watcher = _vision or VisionWatcher(
         llm=llm,
@@ -583,12 +669,23 @@ ADMIN_HTML = """<!doctype html>
 <pre id="enq"></pre>
 
 <script>
+// schedule.json の name や LLM/TTS のエラーメッセージ経由の XSS を防ぐため、
+// 動的な値は必ずエスケープしてから innerHTML に入れる。
+function esc(v){
+  return String(v).replace(/[&<>"']/g, c => (
+    {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function showError(id, message){
+  const el = document.getElementById(id);
+  el.innerHTML = '<span class="err"></span>';
+  el.firstChild.textContent = message;
+}
 async function loadReady(){
   try{
     const r = await fetch('/ready'); const j = await r.json();
     document.getElementById('ready').textContent = JSON.stringify(j, null, 2);
   }catch(e){
-    document.getElementById('ready').innerHTML = '<span class="err">/ready 取得失敗: '+e+'</span>';
+    showError('ready', '/ready 取得失敗: '+e);
   }
 }
 async function loadSched(){
@@ -597,17 +694,17 @@ async function loadSched(){
     if(!j.enabled){ document.getElementById('sched').innerHTML =
        '<i>スケジューラ無効 (SCHEDULE_ENABLED=0)。 /enqueue は使えます。</i>'; return; }
     let html = '<p>running: <b>'+(j.running?'<span class="ok">yes</span>':'<span class="err">no</span>')+
-               '</b> &nbsp; queue_size: <b>'+j.queue_size+'</b></p>';
+               '</b> &nbsp; queue_size: <b>'+esc(j.queue_size)+'</b></p>';
     html += '<table><tr><th>name</th><th>cron</th><th>kind</th><th>next</th><th>fired</th><th>last</th><th>error</th></tr>';
     for(const t of j.triggers){
-      html += '<tr><td>'+t.name+'</td><td><code>'+t.cron+'</code></td><td>'+t.kind+
-              '</td><td>'+t.next+'</td><td>'+t.fire_count+'</td><td>'+(t.last_fire||'-')+
-              '</td><td>'+(t.last_error?'<span class="err">'+t.last_error+'</span>':'-')+'</td></tr>';
+      html += '<tr><td>'+esc(t.name)+'</td><td><code>'+esc(t.cron)+'</code></td><td>'+esc(t.kind)+
+              '</td><td>'+esc(t.next)+'</td><td>'+esc(t.fire_count)+'</td><td>'+esc(t.last_fire||'-')+
+              '</td><td>'+(t.last_error?'<span class="err">'+esc(t.last_error)+'</span>':'-')+'</td></tr>';
     }
     html += '</table>';
     document.getElementById('sched').innerHTML = html;
   }catch(e){
-    document.getElementById('sched').innerHTML = '<span class="err">取得失敗: '+e+'</span>';
+    showError('sched', '取得失敗: '+e);
   }
 }
 async function loadVision(){
@@ -615,7 +712,7 @@ async function loadVision(){
     const r = await fetch('/vision/status'); const j = await r.json();
     document.getElementById('vision').textContent = JSON.stringify(j, null, 2);
   }catch(e){
-    document.getElementById('vision').innerHTML = '<span class="err">/vision/status 取得失敗: '+e+'</span>';
+    showError('vision', '/vision/status 取得失敗: '+e);
   }
 }
 document.getElementById('f').addEventListener('submit', async ev => {

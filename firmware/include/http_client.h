@@ -39,6 +39,14 @@ struct ReadyResponse {
     String body;
 };
 
+struct WakeResponse {
+    bool   detected    = false;
+    bool   ok          = false;
+    int    http_status = 0;
+    String user_text;
+    String timing;
+};
+
 // GET /pull の応答 (定期発話 / 外部 push の受け取り)
 struct PullResponse {
     bool      ok          = false;       // body が読めたか
@@ -52,6 +60,18 @@ struct PullResponse {
 
 class ChatClient {
 public:
+    // サーバ応答ボディの上限。壊れた / 悪意ある Content-Length をそのまま
+    // ps_malloc に渡して PSRAM を一括確保しないためのガード。
+    // 16kHz/16bit/mono の WAV なら 4MB ≒ 2 分強で、通常応答には十分。
+    static constexpr size_t MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+
+    static bool responseTooLarge(size_t resp_len, const char* tag) {
+        if (resp_len <= MAX_RESPONSE_BYTES) return false;
+        log_e("%s response too large: %u bytes (max %u)",
+              tag, (unsigned)resp_len, (unsigned)MAX_RESPONSE_BYTES);
+        return true;
+    }
+
     // Wi-Fi 未接続時に TCP を開くと lwIP / Wi-Fi ドライバが assert することがある。
     static bool wifiReady() {
         return WiFiManager::isConnected();
@@ -233,7 +253,7 @@ public:
                       r.bot_text.c_str(),
                       r.emote.length() ? r.emote.c_str() : "neutral");
 
-        if (r.http_status != 200 || resp_len == 0) {
+        if (r.http_status != 200 || resp_len == 0 || responseTooLarge(resp_len, "/chat")) {
             log_e("HTTP %d, len=%u", r.http_status, (unsigned)resp_len);
             client.stop();
             return r;
@@ -267,6 +287,87 @@ public:
             r.body = nullptr;
             r.body_size = 0;
         }
+        client.stop();
+        return r;
+    }
+
+    // 短い待ち受け WAV を /wake に投げ、ウェイクワード検出だけ行う。
+    // 200 = 検出、204 = 未検出。LLM/TTS は走らない。
+    static WakeResponse wake(const uint8_t* wav, size_t wav_size) {
+        WakeResponse r;
+        if (!wifiReady()) {
+            log_e("wake skipped: WiFi not connected");
+            return r;
+        }
+        Serial.printf("[HTTP] /wake post wav=%u host=%s:%u\n",
+                      (unsigned)wav_size, SERVER_HOST, (unsigned)SERVER_PORT);
+
+        WiFiClient client;
+        if (!connectWithRetry(client, SERVER_HOST, SERVER_PORT, 80)) {
+            log_e("connect failed: %s:%u", SERVER_HOST, (unsigned)SERVER_PORT);
+            return r;
+        }
+        client.setTimeout(HTTP_TIMEOUT_MS);
+
+        const char* boundary = "----stackchanwakeboundary";
+        String head;
+        head += "--"; head += boundary; head += "\r\n";
+        head += "Content-Disposition: form-data; name=\"audio\"; filename=\"wake.wav\"\r\n";
+        head += "Content-Type: audio/wav\r\n\r\n";
+        String tail;
+        tail += "\r\n--"; tail += boundary; tail += "--\r\n";
+
+        const size_t content_length = head.length() + wav_size + tail.length();
+
+        client.print("POST /wake HTTP/1.1\r\n");
+        client.printf("Host: %s:%u\r\n", SERVER_HOST, (unsigned)SERVER_PORT);
+        client.printf("Content-Length: %u\r\n", (unsigned)content_length);
+        client.printf("Content-Type: multipart/form-data; boundary=%s\r\n", boundary);
+        client.print("Accept: application/json\r\n");
+        client.print("Connection: close\r\n\r\n");
+        client.print(head);
+
+        constexpr size_t CHUNK = 1024;
+        size_t sent = 0;
+        while (sent < wav_size) {
+            const size_t n = (wav_size - sent) > CHUNK ? CHUNK : (wav_size - sent);
+            client.write(wav + sent, n);
+            sent += n;
+        }
+        client.print(tail);
+
+        String status = client.readStringUntil('\n');
+        int sp1 = status.indexOf(' ');
+        int sp2 = status.indexOf(' ', sp1 + 1);
+        if (sp1 > 0 && sp2 > sp1) {
+            r.http_status = status.substring(sp1 + 1, sp2).toInt();
+        }
+
+        while (client.connected() || client.available()) {
+            String line = client.readStringUntil('\n');
+            if (line == "\r" || line.length() == 0) break;
+            line.trim();
+            const int colon = line.indexOf(':');
+            if (colon <= 0) continue;
+
+            String name = line.substring(0, colon);
+            String value = line.substring(colon + 1);
+            name.toLowerCase();
+            value.trim();
+
+            if (name == "x-stackchan-user-text") {
+                r.user_text = urlDecode(value);
+            } else if (name == "x-stackchan-timing") {
+                r.timing = value;
+            }
+        }
+
+        r.ok = (r.http_status == 200 || r.http_status == 204);
+        r.detected = (r.http_status == 200);
+        Serial.printf("[HTTP] /wake status=%d detected=%d user='%s'\n",
+                      r.http_status,
+                      r.detected ? 1 : 0,
+                      r.user_text.c_str());
         client.stop();
         return r;
     }
@@ -332,7 +433,8 @@ public:
                       r.bot_text.c_str(),
                       r.emote.length() ? r.emote.c_str() : "neutral");
 
-        if (r.http_status != 200 || resp_len == 0) {
+        if (r.http_status != 200 || resp_len == 0 ||
+            responseTooLarge(resp_len, "/vision/capture")) {
             log_e("HTTP %d, len=%u", r.http_status, (unsigned)resp_len);
             client.stop();
             return r;
@@ -431,7 +533,7 @@ public:
                       r.bot_text.c_str(),
                       r.emote.length() ? r.emote.c_str() : "neutral");
 
-        if (r.http_status != 200 || resp_len == 0) {
+        if (r.http_status != 200 || resp_len == 0 || responseTooLarge(resp_len, "/speak")) {
             log_e("HTTP %d, len=%u", r.http_status, (unsigned)resp_len);
             client.stop();
             return r;
@@ -513,7 +615,8 @@ public:
             }
         }
 
-        if (r.http_status == 204 || r.http_status != 200 || resp_len == 0) {
+        if (r.http_status == 204 || r.http_status != 200 || resp_len == 0 ||
+            responseTooLarge(resp_len, "/pull")) {
             client.stop();
             return r;
         }

@@ -162,6 +162,9 @@ class VisionWatcher:
         self.limit_text = limit_text
         self._task: asyncio.Task | None = None
         self._cap = None
+        # OpenCV VideoCapture は並行アクセス不可。バックグラウンドループと
+        # /vision/capture (capture_once) のカメラ I/O をこのロックで直列化する。
+        self._camera_lock = asyncio.Lock()
         self._running = False
         self._last_motion_at = 0.0
         self._last_capture_at = 0.0
@@ -193,21 +196,24 @@ class VisionWatcher:
             raise RuntimeError(self._last_error) from exc
 
         own_cap = False
-        cap = self._cap
-        if cap is None:
-            cap = cv2.VideoCapture(settings.VISION_CAMERA_INDEX)
-            own_cap = True
         try:
-            if not cap.isOpened():
-                raise RuntimeError(f"camera {settings.VISION_CAMERA_INDEX} could not be opened")
-            frame = None
-            for _ in range(3):
-                ok, frame = cap.read()
-                if not ok:
-                    frame = None
-                await asyncio.sleep(0.03)
-            if frame is None:
-                raise RuntimeError("camera read failed")
+            # カメラのオープン〜読み取りはバックグラウンドループと排他。
+            # (合成などの重い処理はロック外で行う)
+            async with self._camera_lock:
+                cap = self._cap
+                if cap is None:
+                    cap = cv2.VideoCapture(settings.VISION_CAMERA_INDEX)
+                    own_cap = True
+                if not cap.isOpened():
+                    raise RuntimeError(f"camera {settings.VISION_CAMERA_INDEX} could not be opened")
+                frame = None
+                for _ in range(3):
+                    ok, frame = cap.read()
+                    if not ok:
+                        frame = None
+                    await asyncio.sleep(0.03)
+                if frame is None:
+                    raise RuntimeError("camera read failed")
             self._last_capture_at = time.time()
             self._last_error = ""
             jpeg = self._encode_jpeg(cv2, frame)
@@ -337,9 +343,11 @@ class VisionWatcher:
     async def _run_snapshot_loop(self, cv2, cap) -> None:
         while True:
             if (time.monotonic() - self._last_spoken_monotonic) >= settings.VISION_COOLDOWN_S:
-                ok, frame = cap.read()
+                async with self._camera_lock:
+                    ok, frame = cap.read()
                 if not ok:
-                    cap = await self._reopen_camera_after_read_failure(cv2, cap)
+                    async with self._camera_lock:
+                        cap = await self._reopen_camera_after_read_failure(cv2, cap)
                     await asyncio.sleep(2.0)
                     continue
                 else:
@@ -353,9 +361,11 @@ class VisionWatcher:
     async def _run_motion_loop(self, cv2, cap) -> None:
         prev_gray = None
         while True:
-            ok, frame = cap.read()
+            async with self._camera_lock:
+                ok, frame = cap.read()
             if not ok:
-                cap = await self._reopen_camera_after_read_failure(cv2, cap)
+                async with self._camera_lock:
+                    cap = await self._reopen_camera_after_read_failure(cv2, cap)
                 await asyncio.sleep(settings.VISION_POLL_INTERVAL_S)
                 continue
             self._camera_read_failures = 0
@@ -707,7 +717,11 @@ class VisionWatcher:
             f"{self._recent_text_prompt()}"
             f"観察: {observation}"
         )
-        return await asyncio.to_thread(self.llm.chat, settings.VISION_SID, prompt)
+        # remember=False: 長大な vision プロンプトを会話履歴 (in-memory / SQLite)
+        # に蓄積させない。直近セリフの重複回避は _recent_texts 側で行っている。
+        return await asyncio.to_thread(
+            self.llm.chat, settings.VISION_SID, prompt, remember=False
+        )
 
     def _recent_text_prompt(self) -> str:
         recent = [text for text in list(self._recent_texts)[-4:] if text]
@@ -737,7 +751,9 @@ class VisionWatcher:
                     "日本語14〜38字の一文だけ。画像、写真、カメラ、解析とは言わない。"
                     f"{self._recent_text_prompt()}"
                 )
-                return await asyncio.to_thread(self.llm.chat, settings.VISION_SID, prompt)
+                return await asyncio.to_thread(
+                    self.llm.chat, settings.VISION_SID, prompt, remember=False
+                )
 
             hint = self._local_scene_hint(cv2, frame)
             prompt = (
@@ -747,7 +763,9 @@ class VisionWatcher:
                 "日本語14〜38字の一文だけ。画像、写真、カメラ、解析とは言わない。"
                 f"{self._recent_text_prompt()}"
             )
-            return await asyncio.to_thread(self.llm.chat, settings.VISION_SID, prompt)
+            return await asyncio.to_thread(
+                self.llm.chat, settings.VISION_SID, prompt, remember=False
+            )
 
         prompt = (
             "目の前で少し動きがあった。"
@@ -757,7 +775,9 @@ class VisionWatcher:
             f"動きの強さの参考: {(score or 0.0):.2%}。"
             f"{self._recent_text_prompt()}"
         )
-        return await asyncio.to_thread(self.llm.chat, settings.VISION_SID, prompt)
+        return await asyncio.to_thread(
+            self.llm.chat, settings.VISION_SID, prompt, remember=False
+        )
 
     @staticmethod
     def _local_scene_hint(cv2, frame) -> str:

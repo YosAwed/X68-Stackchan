@@ -67,6 +67,7 @@ public:
     void onState(State s) {
         switch (s) {
             case State::Idle:      setScene(RgbScene::Idle);      break;
+            case State::WakeListening:
             case State::Listening: setScene(RgbScene::Listening); break;
             case State::Thinking:  setScene(RgbScene::Thinking);  break;
             case State::Speaking:  setScene(RgbScene::Speaking);  break;

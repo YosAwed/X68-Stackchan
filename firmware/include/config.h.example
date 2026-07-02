@@ -33,26 +33,37 @@ static constexpr uint8_t  MIC_CHANNELS    = 1;
 // 1 発話あたりの最大録音秒数 (PSRAM にバッファ確保)
 static constexpr uint32_t MAX_REC_SECONDS = 10;
 
+// ---- Wake word ---------------------------------------------
+// 1 にすると Idle 中に短い音声片を母艦 /wake へ送り、ウェイクワード検出後に
+// 通常の録音へ入る。タッチ / リモコンの push-to-talk は常に併用可能。
+#define WAKE_WORD_ENABLED 0
+static constexpr uint32_t WAKE_LISTEN_MS = 1800;
+static constexpr uint32_t WAKE_POLL_INTERVAL_MS = 3500;
+
 // ---- スピーカ -----------------------------------------------
 static constexpr uint8_t  SPK_VOLUME = 180; // 0..255
 
 // ---- RGB LED (WS2812C x12) ----------------------------------
-// データピンは実機で確認して調整する (StackChan 基板固定)
-// 使わない場合は RGB_ENABLED を 0 にする。
+// StackChan 基板の PY32 I/O expander (I2C 0x6F) 経由で制御するため、
+// GPIO データピンの指定は不要。使わない場合は RGB_ENABLED を 0 にする。
 #define RGB_ENABLED  1
-#define RGB_DATA_PIN 9    // 要実機確認 — 違う場合はここを変える
 #define RGB_NUM_LEDS 12
-
-// ---- StackChan キット拡張 ----------------------------------
-// I/O expander / RGB / 頭頂タッチセンサーを使う場合は有効化する。
-#define STACKCHAN_BSP_ENABLED 1
-#define HEAD_TOUCH_ENABLED 1
 
 // ---- サーボ (首振り) ----------------------------------------
 // SCS0009 シリアルサーボ x2。StackChan 基板経由で GPIO6/7 固定。
 // サーボを使わない場合は SERVO_ENABLED を 0 にする。
 #define SERVO_ENABLED 1
 // ピン番号は servo_controller.h に固定 (GPIO6=TX, GPIO7=RX)
+//
+// 以下のサブフラグは省略時 0 (servo_controller.h の既定)。
+// SERVO_ENABLED=1 だけでは Idle の微動しか動かないので、演出が欲しい場合は
+// 個別に 1 にする。
+// 状態別ポーズ (Listening=上向き / Thinking=右傾き / Speaking=頷き基点)
+#define SERVO_STATE_MOTION_ENABLED 1
+// スワイプ撫でで首振り、シェイクでよろけアニメ
+#define SERVO_WAGGLE_ENABLED 1
+// 発話 RMS (口パク) に連動した微小な頷き
+#define SERVO_LIPSYNC_MOTION_ENABLED 1
 
 // ---- Power management ---------------------------------------
 // 0: Idle 30分後はソフトSleepに入り、タッチ/リモコンで復帰できる。

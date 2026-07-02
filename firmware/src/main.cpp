@@ -79,6 +79,15 @@ using namespace stackchan;
 #ifndef SLEEP_MURMUR_MAX_MS
 #define SLEEP_MURMUR_MAX_MS (6UL * 60 * 1000)
 #endif
+#ifndef WAKE_WORD_ENABLED
+#define WAKE_WORD_ENABLED 0
+#endif
+#ifndef WAKE_LISTEN_MS
+#define WAKE_LISTEN_MS 1800
+#endif
+#ifndef WAKE_POLL_INTERVAL_MS
+#define WAKE_POLL_INTERVAL_MS 3500
+#endif
 
 static PekekoFace     g_face;
 static AudioRecorder  g_rec;
@@ -90,6 +99,8 @@ static State          g_state = State::Boot;
 static PowerManager::IdleStage g_idle_stage_last = PowerManager::IdleStage::Active;
 static bool           g_wait_release_after_auto_send = false;
 static uint32_t       g_listening_start_ms = 0;
+static uint32_t       g_wake_listening_start_ms = 0;
+static uint32_t       g_next_wake_listen_ms = 0;
 static uint32_t       g_headpat_start_ms = 0;   // Headpat 状態に入った時刻
 static uint32_t       g_headpat_last_press_ms = 0;  // 直近で isPressed=true だった時刻
 static uint32_t       g_headpat_idle_press_ms = 0;  // Idle 中の頭頂タッチ開始時刻
@@ -202,6 +213,11 @@ static inline void updateIdleStatus() {
 
 // 定期発話 / 外部 push をサーバから取りに行く間隔 (Idle 中のみ)
 constexpr uint32_t PULL_INTERVAL_MS = 30000;
+
+// setup で WiFi / 母艦 /ready に失敗した時の再試行間隔 (State::Error 中)
+constexpr uint32_t ERROR_RETRY_INTERVAL_MS = 10000;
+static uint32_t g_error_retry_ms = 0;
+static bool     g_remote_begun = false;
 
 // リモコン A: 1回押しは PTT、ダブルクリックは vision capture。
 constexpr uint32_t REMOTE_DOUBLE_CLICK_MS = 350;
@@ -346,13 +362,15 @@ static void clearSideStatus() {
     // 顔画像を 320x240 全画面にしたため、左右のステータス余白はない。
 }
 
-static void setState(State s, int face_id = -1) {
+static void setState(State s, int face_id = -1, bool note_activity = true) {
     g_state = s;
     if (face_id > 0) {
         g_face.show(face_id);
         g_mic_overlay_visible = false;
     }
-    g_pwr.noteActivity();
+    if (note_activity) {
+        g_pwr.noteActivity();
+    }
     clearSideStatus();
     // Idle に入る時にまばたき/マイクロ表情タイマを初期化、Idle 以外に出る時は停止。
     if (s == State::Idle) {
@@ -367,6 +385,7 @@ static void setState(State s, int face_id = -1) {
 #if SERVO_ENABLED
     switch (s) {
         case State::Idle:      g_servo.goIdle();      break;
+        case State::WakeListening:
         case State::Listening: g_servo.goListening(); break;
         case State::Thinking:  g_servo.goThinking();  break;
         case State::Speaking:  g_servo.goSpeaking();  break;
@@ -733,9 +752,9 @@ void setup() {
     }
     g_face.show(faces::FACE_BOOT_DONE);
 
-    // Idle 中の自動瞬き: 中立顔 (FACE_IDLE) のときだけ 3.5〜6.5 秒間隔で
-    // FACE_IDLE_BLINK を 90ms 挟む
-    g_face.enableAutoBlink(faces::FACE_IDLE, faces::FACE_IDLE_BLINK);
+    // まばたきは main.cpp 側の updateIdleBlink() に一本化する。
+    // (PekekoFace::enableAutoBlink と二重に動かすと両方が show() を叩いて
+    //  チラつき・マイクロ表情との競合が起きるため、こちらは使わない)
 
 #if SERVO_ENABLED
     if (!g_servo.begin()) {
@@ -755,21 +774,27 @@ void setup() {
         return;
     }
     g_pwr.begin();
+    // WiFi / /ready の失敗時も setup を最後まで通し、State::Error に落として
+    // loop 側で定期リトライする (以前は return して永久に復帰しなかった)。
+    bool server_ok = true;
 #if defined(OFFLINE_MODE) && OFFLINE_MODE
     Serial.println("[OFFLINE] skipping WiFi & server ready check (kawaii test mode)");
 #else
     if (!WiFiManager::connectBlocking()) {
         g_face.show(faces::FACE_ERR_WIFI);
-        return;
-    }
-    g_remote.begin();
+        server_ok = false;
+    } else {
+        g_remote.begin();
+        g_remote_begun = true;
 
-    ReadyResponse ready = ChatClient::ready();
-    if (!ready.ok) {
-        showReadyError(ready);
-        return;
+        ReadyResponse ready = ChatClient::ready();
+        if (!ready.ok) {
+            showReadyError(ready);
+            server_ok = false;
+        } else {
+            Serial.printf("[READY] server ok: %s\n", ready.body.c_str());
+        }
     }
-    Serial.printf("[READY] server ok: %s\n", ready.body.c_str());
 #endif
 
     // 短いウェーブの後、Idle 表情へ
@@ -777,7 +802,16 @@ void setup() {
     const uint32_t seed = micros() ^ esp_random();
     randomSeed(seed);
     srand(seed);   // upstream の scheduleNextBlink が rand() を使う
-    setState(State::Idle, faces::FACE_IDLE);
+#if WAKE_WORD_ENABLED
+    // 初期値 0 のままだと Idle 突入と同時にウェイク待受が始まってしまう。
+    g_next_wake_listen_ms = millis() + WAKE_POLL_INTERVAL_MS;
+#endif
+    if (server_ok) {
+        setState(State::Idle, faces::FACE_IDLE);
+    } else {
+        setState(State::Error);   // 顔は上のエラー表示のまま維持
+        g_error_retry_ms = millis() + ERROR_RETRY_INTERVAL_MS;
+    }
 
     // 起動直後の初回ステータス出力（診断強化）。WiFi/ヒープが一目で分かる。
     g_last_status_ms = millis() - STATUS_INTERVAL_MS;
@@ -809,6 +843,7 @@ void loop() {
         const auto t = M5.Touch.getDetail(0);
         pressed = t.isPressed();
     }
+    g_remote.update();                               // 接続/切断・ボタンのログ
     const bool remote_a_edge = g_remote.btnAEdge();  // 毎フレーム呼ぶ (エッジ追跡)
     const bool remote_b_edge = g_remote.btnBEdge();  // MIDI 再生トグル
     bool remote_ptt_edge = false;
@@ -1002,6 +1037,22 @@ void loop() {
                 setState(State::Listening, faces::FACE_LISTENING);
                 break;
             }
+#if WAKE_WORD_ENABLED && (!defined(OFFLINE_MODE) || !OFFLINE_MODE)
+            // ウェイクワード待ち受け: 短い音声片だけ録り、母艦 /wake で STT 判定する。
+            // 検出したら ack beep の後に通常の発話録音へ入る。
+            if (!g_wait_release_after_auto_send &&
+                millis() >= g_next_wake_listen_ms &&
+                WiFiManager::ensureConnected()) {
+#if MIDI_SAM2695_ENABLED
+                stopMidiPlayback("wake listen");
+#endif
+                Serial.println("[WAKE] listen start");
+                g_rec.start();
+                g_wake_listening_start_ms = millis();
+                setState(State::WakeListening, -1, false);
+                break;
+            }
+#endif
 #if !defined(OFFLINE_MODE) || !OFFLINE_MODE
             // 待機中: Wi-Fi 回復後だけ /pull を叩く (未接続時の TCP は assert 原因)。
             if (WiFiManager::ensureConnected()) {
@@ -1029,6 +1080,60 @@ void loop() {
             updateIdleMicro();
             // 診断用定期ステータス（WiFi/heap/uptime）。回復した直後も見えるようにする。
             updateIdleStatus();
+            break;
+        }
+
+        case State::WakeListening: {
+            g_rec.poll();
+            drawMicLevel(g_rec.lastPeak(), g_rec.lastRms());
+
+            // 待ち受け中でも手動 PTT が来たら即座に本録音へ切替。
+            if ((pressed || remote_ptt_edge) && !g_wait_release_after_auto_send) {
+                Serial.println("[WAKE] interrupted by manual PTT");
+                g_rec.stop();
+                g_rec.start();
+                g_listening_start_ms = millis();
+                g_wake_listening_start_ms = 0;
+                setState(State::Listening, faces::FACE_LISTENING);
+                break;
+            }
+
+            const bool wake_overflow = g_rec.isFull();
+            const bool wake_window_done =
+                g_wake_listening_start_ms != 0 &&
+                millis() - g_wake_listening_start_ms >= WAKE_LISTEN_MS;
+            if (wake_overflow || wake_window_done) {
+                const size_t n = g_rec.stop();
+                g_wake_listening_start_ms = 0;
+                bool detected = false;
+#if defined(OFFLINE_MODE) && OFFLINE_MODE
+                Serial.printf("[OFFLINE] wake sample %u bytes (skip /wake)\n", (unsigned)n);
+#else
+                if (WiFiManager::ensureConnected()) {
+                    WakeResponse wr = ChatClient::wake(g_rec.data(), n);
+                    if (wr.timing.length() > 0) {
+                        Serial.printf("[TIME] %s\n", wr.timing.c_str());
+                    }
+                    detected = wr.ok && wr.detected;
+                    if (wr.user_text.length() > 0) {
+                        Serial.printf("[WAKE] heard='%s' detected=%d\n",
+                                      wr.user_text.c_str(),
+                                      detected ? 1 : 0);
+                    }
+                } else {
+                    Serial.println("[WAKE] skipped (WiFi not connected)");
+                }
+#endif
+                if (detected) {
+                    playAckBeep();
+                    g_rec.start();
+                    g_listening_start_ms = millis();
+                    setState(State::Listening, faces::FACE_LISTENING);
+                } else {
+                    g_next_wake_listen_ms = millis() + WAKE_POLL_INTERVAL_MS;
+                    setState(State::Idle, faces::FACE_IDLE, false);
+                }
+            }
             break;
         }
 
@@ -1060,6 +1165,20 @@ void loop() {
                               pressed ? 1 : 0,
                               g_remote.btnA() ? 1 : 0);
                 g_listening_start_ms = 0;
+
+                // ほぼ空の録音 (0.1 秒未満 = タップして即離した等) は音声を
+                // 含み得ないので、サーバへ送らず「聞こえなかった」顔だけ出す。
+                constexpr size_t MIN_SEND_BYTES =
+                    44 + (MIC_SAMPLE_RATE / 10) * (MIC_BITS / 8) * MIC_CHANNELS;
+                if (n < MIN_SEND_BYTES) {
+                    Serial.printf("[REC ] too short (%u bytes < %u), skip send\n",
+                                  (unsigned)n, (unsigned)MIN_SEND_BYTES);
+                    g_face.show(faces::FACE_NO_SPEECH);
+                    delay(600);
+                    setState(State::Idle, faces::FACE_IDLE);
+                    break;
+                }
+
                 setState(State::Thinking, faces::FACE_THINKING);
                 const uint32_t t_send_start = millis();
 #if defined(OFFLINE_MODE) && OFFLINE_MODE
@@ -1221,6 +1340,32 @@ void loop() {
             break;
         }
 
+        case State::Error: {
+            // setup で WiFi / 母艦 /ready に失敗した場合の定期リトライ。
+            // 成功したら Idle へ復帰する (以前は電源再投入まで固まっていた)。
+#if !defined(OFFLINE_MODE) || !OFFLINE_MODE
+            const uint32_t now = millis();
+            if ((int32_t)(now - g_error_retry_ms) < 0) break;
+            g_error_retry_ms = now + ERROR_RETRY_INTERVAL_MS;
+            if (!WiFiManager::ensureConnected()) {
+                Serial.println("[RETRY] WiFi still not connected");
+                break;
+            }
+            if (!g_remote_begun) {
+                g_remote.begin();
+                g_remote_begun = true;
+            }
+            ReadyResponse ready = ChatClient::ready();
+            if (!ready.ok) {
+                Serial.printf("[RETRY] /ready failed: HTTP %d\n", ready.http_status);
+                break;
+            }
+            Serial.printf("[READY] server ok after retry: %s\n", ready.body.c_str());
+            setState(State::Idle, faces::FACE_IDLE);
+#endif
+            break;
+        }
+
         default:
             break;
     }
@@ -1274,8 +1419,8 @@ void loop() {
     }
 #endif
 
-    // 顔アニメ tick (Idle 中の自動瞬き)。FACE_IDLE 以外の表情中は休止する。
-    g_face.tick();
+    // まばたきは State::Idle 内の updateIdleBlink() が担当するため、
+    // PekekoFace::tick() (autoblink 未使用) はここでは呼ばない。
 
     delay(5);
 }

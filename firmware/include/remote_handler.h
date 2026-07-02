@@ -41,30 +41,43 @@ public:
     }
 
     void update() {
-        const bool connected = isConnected();
+        const State s = snapshot();
+        const bool connected = connectedFor(s);
         if (connected != was_connected_) {
             was_connected_ = connected;
             Serial.printf("[RMT ] %s\n", connected ? "connected" : "lost");
         }
-        const uint8_t buttons = connected ? state_.buttons : 0;
+        const uint8_t buttons = connected ? s.buttons : 0;
         if (buttons != last_logged_buttons_) {
             last_logged_buttons_ = buttons;
             Serial.printf("[RMT ] buttons=%02X\n", buttons);
         }
     }
 
-    // リモコンが接続中 (最近パケットを受信した) か
-    bool isConnected() const {
-        return state_.last_ms > 0 &&
-               millis() - state_.last_ms < TIMEOUT_MS;
+    // 受信コールバック (WiFi タスク) と loop の間の torn read を防ぐため、
+    // state_ はクリティカルセクションで丸ごとコピーして読む。
+    State snapshot() const {
+        portENTER_CRITICAL(&mux_);
+        const State s = state_;
+        portEXIT_CRITICAL(&mux_);
+        return s;
     }
 
-    // ジョイスティック値 (不感帯処理済み) を normalized -1..+1 で返す
-    float yawNorm()   const { return applyDeadzone(state_.joy_x) / 100.0f; }
-    float pitchNorm() const { return applyDeadzone(state_.joy_y) / 100.0f; }
+    // リモコンが接続中 (最近パケットを受信した) か
+    bool isConnected() const { return connectedFor(snapshot()); }
 
-    bool btnA() const { return isConnected() && (state_.buttons & 0x01) != 0; }
-    bool btnB() const { return isConnected() && (state_.buttons & 0x02) != 0; }
+    // ジョイスティック値 (不感帯処理済み) を normalized -1..+1 で返す
+    float yawNorm()   const { return applyDeadzone(snapshot().joy_x) / 100.0f; }
+    float pitchNorm() const { return applyDeadzone(snapshot().joy_y) / 100.0f; }
+
+    bool btnA() const {
+        const State s = snapshot();
+        return connectedFor(s) && (s.buttons & 0x01) != 0;
+    }
+    bool btnB() const {
+        const State s = snapshot();
+        return connectedFor(s) && (s.buttons & 0x02) != 0;
+    }
 
     // ボタン A/B の立ち上がりエッジ検出 (毎 loop 呼ぶ)
     bool btnAEdge() {
@@ -81,7 +94,7 @@ public:
         return edge;
     }
 
-    const State& raw() const { return state_; }
+    State raw() const { return snapshot(); }
 
 private:
     static constexpr uint8_t MAGIC[2] = {0x53, 0xC5};
@@ -93,7 +106,12 @@ private:
         uint8_t buttons;
     };
 
+    static bool connectedFor(const State& s) {
+        return s.last_ms > 0 && millis() - s.last_ms < TIMEOUT_MS;
+    }
+
     State state_;
+    mutable portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
     bool  prev_btn_a_ = false;
     bool  prev_btn_b_ = false;
     bool  was_connected_ = false;
@@ -110,13 +128,16 @@ private:
         if (!instance_ || len < (int)sizeof(Packet)) return;
         const Packet* pkt = reinterpret_cast<const Packet*>(data);
         if (pkt->magic[0] != MAGIC[0] || pkt->magic[1] != MAGIC[1]) return;
+        portENTER_CRITICAL(&instance_->mux_);
         instance_->state_.joy_x   = pkt->joy_x;
         instance_->state_.joy_y   = pkt->joy_y;
         instance_->state_.buttons = pkt->buttons;
         instance_->state_.last_ms = millis();
+        portEXIT_CRITICAL(&instance_->mux_);
     }
 };
 
-RemoteHandler* RemoteHandler::instance_ = nullptr;
+// C++17 inline 変数: 複数 TU から include されても ODR 違反にならない。
+inline RemoteHandler* RemoteHandler::instance_ = nullptr;
 
 } // namespace stackchan

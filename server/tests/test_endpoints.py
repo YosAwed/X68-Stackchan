@@ -53,6 +53,12 @@ def app_with_fakes(monkeypatch_module):
         def chat(self, sid: str, text: str) -> str:
             return f"echo:{text}"
 
+        def reset(self, sid: str) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
         def status(self):
             return {"ok": True}
 
@@ -257,6 +263,35 @@ def test_speak_reports_tts_cache_timing_on_cache_hit(tmp_path, app_with_fakes):
         app_with_fakes.wav_cache = original_cache
 
 
+def test_wake_returns_200_when_keyword_detected(client, app_with_fakes):
+    original = app_with_fakes.stt.transcribe
+    app_with_fakes.stt.transcribe = lambda wav: "ぺけ子ちゃん、起きて"
+    try:
+        r = client.post(
+            "/wake",
+            files={"audio": ("wake.wav", b"RIFF" + b"\x00" * 40, "audio/wav")},
+        )
+    finally:
+        app_with_fakes.stt.transcribe = original
+    assert r.status_code == 200
+    assert r.json()["wake"] is True
+    assert r.json()["text"] == "ぺけ子ちゃん、起きて"
+
+
+def test_wake_returns_204_without_keyword(client, app_with_fakes):
+    original = app_with_fakes.stt.transcribe
+    app_with_fakes.stt.transcribe = lambda wav: "今日はいい天気"
+    try:
+        r = client.post(
+            "/wake",
+            files={"audio": ("wake.wav", b"RIFF" + b"\x00" * 40, "audio/wav")},
+        )
+    finally:
+        app_with_fakes.stt.transcribe = original
+    assert r.status_code == 204
+    assert r.content == b""
+
+
 def test_enqueue_with_via_llm_routes_through_llm(client, app_with_fakes):
     while app_with_fakes.queue.size() > 0:
         app_with_fakes.queue._q.get_nowait()
@@ -341,12 +376,39 @@ def test_vision_capture_returns_wav(client, app_with_fakes, monkeypatch):
 
     monkeypatch.setattr(VisionWatcher, "capture_once", fake_capture_once)
 
-    r = client.post("/vision/capture")
+    r = client.post(
+        "/vision/capture",
+        headers={"X-Stackchan-Token": TEST_ENQUEUE_TOKEN},
+    )
 
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("audio/wav")
     assert unquote(r.headers["x-stackchan-bot-text"]) == "机の上にキーボードがある。"
     assert r.content.startswith(b"RIFF")
+
+
+def test_vision_capture_requires_token_when_configured(client):
+    # ENQUEUE_TOKEN が設定されている環境では /vision/capture もトークン必須
+    r = client.post("/vision/capture")
+    assert r.status_code == 401
+
+
+# ---------------- /reset ----------------
+
+
+def test_reset_requires_token_when_configured(client):
+    r = client.post("/reset", data={"sid": "default"})
+    assert r.status_code == 401
+
+
+def test_reset_succeeds_with_token(client):
+    r = client.post(
+        "/reset",
+        data={"sid": "default"},
+        headers={"X-Stackchan-Token": TEST_ENQUEUE_TOKEN},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
 
 
 # ---------------- /chat concurrency ----------------
@@ -411,3 +473,8 @@ def test_admin_returns_html(client):
     # 主要なエンドポイントに JS で fetch している
     for fragment in ("/ready", "/scheduler/status", "/vision/status", "/enqueue"):
         assert fragment in body
+    # 動的な値 (trigger 名 / last_error など) は esc() でエスケープしてから
+    # innerHTML に入れる (XSS 防止)
+    assert "function esc(" in body
+    assert "esc(t.name)" in body
+    assert "esc(t.last_error)" in body

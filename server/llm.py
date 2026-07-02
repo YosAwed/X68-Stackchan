@@ -180,6 +180,9 @@ class LLM:
         # {sid: deque[(role, content)]}  role in {"user", "assistant"}
         self._history: Dict[str, Deque[tuple[str, str]]] = OrderedDict()
         self._history_lock = threading.RLock()
+        # 同一 sid への並行 chat() を直列化するロック。これが無いと両者が
+        # 同じ履歴スナップショットで Ollama を叩き、履歴が lost update する。
+        self._session_locks: Dict[str, threading.Lock] = {}
         # 永続化が有効な場合のみ SQLite ストアを開き、起動時に既存履歴をハイドレート。
         self._store: HistoryStore | None = None
         if history_db:
@@ -196,16 +199,27 @@ class LLM:
             log.info("LLM hydrated %d session(s) from %s",
                      len(self._history), history_db)
 
-    def chat(self, session_id: str, user_text: str) -> str:
+    def _session_lock(self, session_id: str) -> threading.Lock:
+        with self._history_lock:
+            lock = self._session_locks.get(session_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._session_locks[session_id] = lock
+            return lock
+
+    def chat(self, session_id: str, user_text: str, *, remember: bool = True) -> str:
+        # スナップショット取得 → Ollama 呼び出し → 履歴 append までを
+        # セッション単位で直列化する (別セッション同士は並行できる)。
+        # remember=False は履歴に残さない one-shot 呼び出し (vision 用など)。
+        with self._session_lock(session_id):
+            return self._chat_locked(session_id, user_text, remember=remember)
+
+    def _chat_locked(self, session_id: str, user_text: str, *, remember: bool) -> str:
         with self._history_lock:
             hist = self._history.get(session_id)
-            if hist is None:
-                hist = deque(maxlen=self.history_turns * 2)
-                self._history[session_id] = hist
-            elif isinstance(self._history, OrderedDict):
+            if hist is not None and remember and isinstance(self._history, OrderedDict):
                 self._history.move_to_end(session_id)
-
-            history_snapshot = list(hist)
+            history_snapshot = list(hist) if hist is not None else []
 
         # 時間文脈を 2 つめの system message として注入。SYSTEM_PROMPT は不変
         # のままなので、Ollama 側のプロンプトキャッシュは効いたままになる。
@@ -245,6 +259,10 @@ class LLM:
         bot_text = _clean_bot_text(data["message"]["content"], user_text)
         log.info("LLM ◀ %r", bot_text)
 
+        if not remember:
+            # one-shot: in-memory 履歴にも SQLite にも残さない。
+            return bot_text
+
         dropped_sids: list[str] = []
         with self._history_lock:
             hist = self._history.get(session_id)
@@ -258,6 +276,7 @@ class LLM:
             while len(self._history) > self.max_sessions:
                 dropped, _ = self._history.popitem(last=False)
                 dropped_sids.append(dropped)
+                self._session_locks.pop(dropped, None)
                 log.info("LLM dropped old session history: %s", dropped)
 
         if self._store is not None:
@@ -298,9 +317,19 @@ class LLM:
                 "error": str(e),
             }
 
+    def close(self) -> None:
+        """HTTP コネクションと履歴 DB を明示的に閉じる (lifespan shutdown 用)。"""
+        try:
+            self._client.close()
+        except Exception:
+            log.exception("httpx client close failed")
+        if self._store is not None:
+            self._store.close()
+
     def reset(self, session_id: str) -> None:
         with self._history_lock:
             self._history.pop(session_id, None)
+            self._session_locks.pop(session_id, None)
         if self._store is not None:
             self._store.reset(session_id)
 

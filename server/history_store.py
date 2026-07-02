@@ -46,6 +46,11 @@ class HistoryStore:
         # path=":memory:" を許容するため check_same_thread=False。
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         with self._lock:
+            # LLM スレッドの書き込みと Scheduler の last_ts 参照が重なった時に
+            # SQLITE_BUSY で即失敗しないよう、待機時間と WAL を設定する。
+            self._conn.execute("PRAGMA busy_timeout=5000")
+            if self.path != ":memory:":
+                self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.executescript(_SCHEMA)
             self._conn.commit()
         log.info("HistoryStore opened: %s", self.path)

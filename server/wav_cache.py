@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
+import threading
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -64,8 +66,11 @@ class WavCache:
         p = self._path(text)
         if p is None:
             return
-        # atomic write: tmp に書いてから rename
-        tmp = p.with_suffix(".wav.tmp")
+        # atomic write: tmp に書いてから rename。
+        # tmp 名にはスレッド ID を混ぜ、同一テキストの並行 put (asyncio.to_thread
+        # から同時に呼ばれるケース) でも tmp ファイルが衝突しないようにする。
+        # rename 自体はアトミックなので、読み手が部分ファイルを見ることはない。
+        tmp = p.with_suffix(f".wav.{os.getpid()}-{threading.get_ident()}.tmp")
         try:
             tmp.write_bytes(wav)
             tmp.replace(p)

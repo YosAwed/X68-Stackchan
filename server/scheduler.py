@@ -261,12 +261,17 @@ class Scheduler:
                 if trig.kind == "fixed":
                     trig._cached_wav = wav
             emote = classify_emote(bot_text)
-            reservation.commit(Utterance(
+            committed = reservation.commit(Utterance(
                 wav=wav,
                 bot_text=bot_text,
                 source=f"sched:{trig.name}",
                 emote=emote,
             ))
+            if not committed:
+                # キュー満杯で WAV が捨てられた場合は発火成功として数えない。
+                log.warning("trigger %s dropped: utterance queue full", trig.name)
+                trig.record_error(RuntimeError("utterance queue full"))
+                return
             trig.record_fire(datetime.now())
         finally:
             reservation.release()
