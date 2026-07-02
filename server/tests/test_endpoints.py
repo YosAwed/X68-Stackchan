@@ -278,6 +278,20 @@ def test_wake_returns_200_when_keyword_detected(client, app_with_fakes):
     assert r.json()["text"] == "ぺけ子ちゃん、起きて"
 
 
+def test_wake_accepts_common_stt_misrecognition(client, app_with_fakes):
+    original = app_with_fakes.stt.transcribe
+    app_with_fakes.stt.transcribe = lambda wav: "ピキコちゃんなん、おしゃべり"
+    try:
+        r = client.post(
+            "/wake",
+            files={"audio": ("wake.wav", b"RIFF" + b"\x00" * 40, "audio/wav")},
+        )
+    finally:
+        app_with_fakes.stt.transcribe = original
+    assert r.status_code == 200
+    assert r.json()["wake"] is True
+
+
 def test_wake_returns_204_without_keyword(client, app_with_fakes):
     original = app_with_fakes.stt.transcribe
     app_with_fakes.stt.transcribe = lambda wav: "今日はいい天気"

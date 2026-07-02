@@ -30,6 +30,7 @@ import logging
 import re
 import time
 from contextlib import asynccontextmanager
+from difflib import SequenceMatcher
 from pathlib import Path
 from urllib.parse import quote
 
@@ -123,23 +124,76 @@ _scheduler: Scheduler | None = None
 _vision: VisionWatcher | None = None
 
 
+_WAKE_ALIASES = (
+    # Whisper often hears "ぺけ子" with nearby vowels/consonants in short clips.
+    "ぺけこ",
+    "ぺけご",
+    "ぺこ",
+    "ぺけちゃん",
+    "ぴけこ",
+    "ぴきこ",
+    "ぴこ",
+    "ぺきこ",
+    "ぺけごちゃん",
+    "ぴきこちゃん",
+    "ぴけこちゃん",
+    # Stack-chan alternatives.
+    "すたっくちゃん",
+    "すたちゃん",
+    "すたっちゃん",
+    "すたくちゃん",
+    "すたっく",
+)
+
+
+def _katakana_to_hiragana(text: str) -> str:
+    return "".join(
+        chr(ord(ch) - 0x60) if "ァ" <= ch <= "ン" else ch
+        for ch in text
+    )
+
+
 def _normalize_wake_text(text: str) -> str:
-    return re.sub(r"[\s、。,.!！?？「」『』（）()・ー\-_]+", "", text).lower()
+    text = _katakana_to_hiragana(text).lower()
+    text = text.replace("子", "こ").replace("仔", "こ")
+    return re.sub(r"[\s、。,.!！?？「」『』（）()・ー\-_]+", "", text)
 
 
 def _wake_words() -> list[str]:
-    return [
+    words = [
         w
         for w in (_normalize_wake_text(part) for part in settings.WAKE_WORDS.split(","))
         if w
     ]
+    words.extend(_normalize_wake_text(alias) for alias in _WAKE_ALIASES)
+    return sorted(set(words), key=len, reverse=True)
+
+
+def _wake_similarity(a: str, b: str) -> float:
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def _has_fuzzy_wake_word(text: str, word: str) -> bool:
+    if len(word) < 3 or len(text) < 3:
+        return False
+    threshold = 0.82 if len(word) <= 3 else 0.74
+    min_len = max(3, len(word) - 1)
+    max_len = min(len(text), len(word) + 2)
+    for size in range(min_len, max_len + 1):
+        for start in range(0, len(text) - size + 1):
+            if _wake_similarity(text[start:start + size], word) >= threshold:
+                return True
+    return False
 
 
 def _is_wake_word(text: str) -> bool:
     normalized = _normalize_wake_text(text)
     if not normalized:
         return False
-    return any(word in normalized for word in _wake_words())
+    words = _wake_words()
+    if any(word in normalized for word in words):
+        return True
+    return any(_has_fuzzy_wake_word(normalized, word) for word in words)
 
 
 async def _prewarm_tts():

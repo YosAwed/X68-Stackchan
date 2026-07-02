@@ -88,10 +88,23 @@ public:
 private:
     static constexpr int      BATT_WARN_PCT     = 15;
     static constexpr int      BATT_CRITICAL_PCT = 5;
-    static constexpr uint32_t IDLE_BORED_MS     = 3UL * 60 * 1000;  // 3 分: 退屈
-    static constexpr uint32_t IDLE_YAWN_MS      = 4UL * 60 * 1000;  // 4 分: あくび
-    static constexpr uint32_t IDLE_ZZZ_MS       = 5UL * 60 * 1000;  // 5 分: Zzz 表情
-    static constexpr uint32_t IDLE_SLEEP_MS     = 30UL * 60 * 1000; // 30 分: deep sleep
+#ifndef POWER_IDLE_BORED_MS
+#define POWER_IDLE_BORED_MS (3UL * 60 * 1000)
+#endif
+#ifndef POWER_IDLE_YAWN_MS
+#define POWER_IDLE_YAWN_MS (4UL * 60 * 1000)
+#endif
+#ifndef POWER_IDLE_ZZZ_MS
+#define POWER_IDLE_ZZZ_MS (5UL * 60 * 1000)
+#endif
+#ifndef POWER_IDLE_SLEEP_MS
+#define POWER_IDLE_SLEEP_MS (30UL * 60 * 1000)
+#endif
+
+    static constexpr uint32_t IDLE_BORED_MS     = POWER_IDLE_BORED_MS;
+    static constexpr uint32_t IDLE_YAWN_MS      = POWER_IDLE_YAWN_MS;
+    static constexpr uint32_t IDLE_ZZZ_MS       = POWER_IDLE_ZZZ_MS;
+    static constexpr uint32_t IDLE_SLEEP_MS     = POWER_IDLE_SLEEP_MS;
     static constexpr uint32_t BATT_POLL_MS      = 5000;             // 5 秒ごと
 
     uint32_t last_activity_ms_   = 0;

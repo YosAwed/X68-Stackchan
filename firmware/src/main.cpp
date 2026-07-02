@@ -113,6 +113,9 @@ static State          g_state = State::Boot;
 static PowerManager::IdleStage g_idle_stage_last = PowerManager::IdleStage::Active;
 static bool           g_wait_release_after_auto_send = false;
 static uint32_t       g_listening_start_ms = 0;
+static bool           g_auto_listening_after_wake = false;
+static bool           g_auto_listening_heard_voice = false;
+static uint32_t       g_auto_listening_last_voice_ms = 0;
 static uint32_t       g_wake_listening_start_ms = 0;
 static uint32_t       g_next_wake_listen_ms = 0;
 static uint32_t       g_headpat_start_ms = 0;   // Headpat 状態に入った時刻
@@ -121,6 +124,9 @@ static uint32_t       g_headpat_idle_press_ms = 0;  // Idle 中の頭頂タッ�
 static uint32_t       g_headpat_idle_cool_ms = 0;   // BSP fallback の再発火抑止
 static uint32_t       g_sleep_enter_ms = 0;
 static bool           g_sleep_head_released = false;
+static uint32_t       g_sleep_touch_wake_start_ms = 0;
+static uint32_t       g_sleep_remote_wake_start_ms = 0;
+static uint32_t       g_sleep_head_wake_start_ms = 0;
 static uint32_t       g_sleep_next_murmur_ms = 0;
 static uint32_t       g_last_mic_log_ms = 0;
 static bool           g_mic_overlay_visible = false;
@@ -131,6 +137,22 @@ static uint32_t g_last_status_ms = 0;
 
 // 診断用定期ステータス出力間隔（シリアルでヒープ/WiFi/uptimeを確認しやすくする）
 constexpr uint32_t STATUS_INTERVAL_MS = 15000;
+
+// Wake word detected -> hands-free follow-up recording.
+// Manual PTT still uses release-to-send; these thresholds only affect the
+// automatic listening window after the short "はーい!" wake reply.
+constexpr uint32_t AUTO_LISTEN_MAX_MS = 6500;
+constexpr uint32_t AUTO_LISTEN_MIN_MS = 900;
+constexpr uint32_t AUTO_LISTEN_SILENCE_MS = 1100;
+constexpr uint16_t AUTO_LISTEN_RMS_THRESHOLD = 180;
+constexpr uint16_t AUTO_LISTEN_PEAK_THRESHOLD = 1200;
+
+// Sleep wake should be intentional. Touch sensors can blip briefly while the
+// body settles, so require a short hold instead of waking on a single frame.
+constexpr uint32_t SLEEP_WAKE_MIN_AGE_MS = 2500;
+constexpr uint32_t SLEEP_TOUCH_WAKE_HOLD_MS = 650;
+constexpr uint32_t SLEEP_REMOTE_WAKE_HOLD_MS = 450;
+constexpr uint32_t SLEEP_HEAD_WAKE_HOLD_MS = 1200;
 
 // ---- Idle 中のまばたき ----
 // 4〜8 秒のランダム間隔で目を閉じた表情 (FACE_BLINK) を 150 ms 表示する。
@@ -420,6 +442,7 @@ static void clearSideStatus() {
 }
 
 static void setState(State s, int face_id = -1, bool note_activity = true) {
+    const State prev_state = g_state;
     g_state = s;
     if (face_id > 0) {
         g_face.show(face_id);
@@ -441,20 +464,37 @@ static void setState(State s, int face_id = -1, bool note_activity = true) {
     // 状態遷移時は一時リアクションの保持も解除しておく (取り残し防止)。
     g_reaction_active = false;
 #if SERVO_ENABLED
-    switch (s) {
-        case State::Idle:      g_servo.goIdle();      break;
-        case State::WakeListening:
-        case State::Listening: g_servo.goListening(); break;
-        case State::Thinking:  g_servo.goThinking();  break;
-        case State::Speaking:  g_servo.goSpeaking();  break;
-        case State::Headpat:   g_servo.goHeadpat();   break;
-        case State::Sleep:     g_servo.goSleep();     break;
-        default: break;
+    if (prev_state != s) {
+        switch (s) {
+            case State::Idle:      g_servo.goIdle();      break;
+            case State::WakeListening:
+                // Background wake sampling should not make the head nod every
+                // polling cycle. Only real follow-up Listening moves upward.
+                break;
+            case State::Listening: g_servo.goListening(); break;
+            case State::Thinking:  g_servo.goThinking();  break;
+            case State::Speaking:  g_servo.goSpeaking();  break;
+            case State::Headpat:   g_servo.goHeadpat();   break;
+            case State::Sleep:     g_servo.goSleep();     break;
+            default: break;
+        }
     }
 #endif
 #if RGB_ENABLED
     g_rgb.onState(s);
 #endif
+}
+
+static void enterBackgroundWakeListening() {
+    // Periodic wake sampling is intentionally invisible. It should not reset
+    // idle blink/micro timers, move the servo, change RGB, or redraw the face.
+    g_state = State::WakeListening;
+}
+
+static void leaveBackgroundWakeListening() {
+    // Return to Idle just as quietly. The regular Idle loop will continue
+    // blinking/micro expressions from its existing timers.
+    g_state = State::Idle;
 }
 
 static void drawMicLevel(uint16_t peak, uint16_t rms) {
@@ -489,6 +529,14 @@ static void drawMicLevel(uint16_t peak, uint16_t rms) {
         g_mic_overlay_visible = true;
     }
 
+    const uint32_t now = millis();
+    if (now - g_last_mic_log_ms >= 500) {
+        g_last_mic_log_ms = now;
+        Serial.printf("[MIC ] peak=%u rms=%u\n", (unsigned)peak, (unsigned)rms);
+    }
+}
+
+static void logMicLevel(uint16_t peak, uint16_t rms) {
     const uint32_t now = millis();
     if (now - g_last_mic_log_ms >= 500) {
         g_last_mic_log_ms = now;
@@ -563,6 +611,20 @@ static void showReadyError(const ReadyResponse& ready) {
 }
 
 // 応答 WAV を再生しながら、PCM の RMS で口パク (口閉/口開/大開 3 段階)
+static bool prepareSpeakerPlayback(const char* tag) {
+    M5.Speaker.end();
+    delay(20);
+    const bool speaker_ready = M5.Speaker.begin();
+    M5.Speaker.setVolume(SPK_VOLUME);
+    M5.Speaker.setAllChannelVolume(255);
+    Serial.printf("[AUDIO] speaker begin=%d volume=%u tag=%s\n",
+                  speaker_ready ? 1 : 0,
+                  (unsigned)SPK_VOLUME,
+                  tag ? tag : "-");
+    delay(20);
+    return speaker_ready;
+}
+
 static void playWavWithLipsync(const uint8_t* wav, size_t size,
                                const char* emote = nullptr,
                                const String& caption = String()) {
@@ -577,15 +639,7 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size,
                   (emote && emote[0]) ? emote : "neutral",
                   (unsigned)caption.length());
 
-    M5.Speaker.end();
-    delay(20);
-    const bool speaker_ready = M5.Speaker.begin();
-    M5.Speaker.setVolume(SPK_VOLUME);
-    M5.Speaker.setAllChannelVolume(255);
-    Serial.printf("[AUDIO] speaker begin=%d volume=%u\n",
-                  speaker_ready ? 1 : 0,
-                  (unsigned)SPK_VOLUME);
-    delay(20);
+    prepareSpeakerPlayback("speak");
 
     // WAV ヘッダから data チャンクを探す (簡易: 標準的な配置を仮定)
     const uint8_t* pcm = wav + 44;
@@ -760,8 +814,24 @@ static void playSleepMurmurIfDue() {
         if (r.body) free(r.body);
         return;
     }
-    setState(State::Speaking);
-    playWavWithLipsync(r.body, r.body_size, "sleepy", r.bot_text.length() ? r.bot_text : text);
+    // Stay asleep: play the murmur audio without entering Speaking, lipsync,
+    // or emote servo motion. This keeps the sleepy face/pose from twitching.
+    prepareSpeakerPlayback("sleep-murmur");
+    const bool started = M5.Speaker.playWav(
+        r.body,
+        r.body_size,
+        /*repeat=*/1,
+        /*channel=*/0,
+        /*stop_current_sound=*/true);
+    Serial.printf("[SLEEP] murmur playback bytes=%u ok=%d\n",
+                  (unsigned)r.body_size,
+                  started ? 1 : 0);
+    while (M5.Speaker.isPlaying()) {
+#if RGB_ENABLED
+        g_rgb.update();
+#endif
+        delay(4);
+    }
     free(r.body);
 #if RGB_ENABLED
     g_rgb.setScene(RgbScene::Sleep);
@@ -963,10 +1033,23 @@ void loop() {
                 g_wait_release_after_auto_send = false;
             }
 
+#if MIDI_SAM2695_ENABLED
+            // MIDI playback is timing-sensitive because it is streamed from
+            // the main loop over UART. Keep manual controls alive, but skip
+            // background work that would stall MIDI events.
+            const bool midi_playing = g_midi.isPlaying();
+            if (midi_playing && remote_b_edge && !g_wait_release_after_auto_send) {
+                toggleMidiPlayback("remote BtnB");
+                break;
+            }
+#else
+            const bool midi_playing = false;
+#endif
+
             // 頭頂タッチ: スワイプ優先、ホールドでなでなで (headpat)
             // wasPressed() は即発火するためスワイプ判定と競合する。
             // g_touch.update() に一本化して Swipe/Pet を区別する。
-            if (!g_wait_release_after_auto_send) {
+            if (!midi_playing && !g_wait_release_after_auto_send) {
                 const uint32_t now = millis();
                 const auto touch_ev = g_touch.update(M5StackChan.TouchSensor.getIntensities());
                 bool headpat_fallback = false;
@@ -1024,11 +1107,11 @@ void loop() {
             }
 
             // レアイベント (鼻歌 / 伸び)。発火したら反応保持に入る。
-            maybePlayIdleEvent();
+            if (!midi_playing) maybePlayIdleEvent();
             if (g_reaction_active) break;
 
             // IMU: 激しいシェイク → 目回し、持ち上げ/小突き → 驚き。
-            {
+            if (!midi_playing) {
                 const auto imu_ev = g_imu.update();
                 if (imu_ev == ImuHandler::Event::Shake) {
                     Serial.println("[IMU ] shake -> dizzy");
@@ -1077,6 +1160,9 @@ void loop() {
             if (remote_vision_edge && !g_wait_release_after_auto_send) {
                 Serial.println("[VISION] capture requested by remote double-click");
                 g_wait_release_after_auto_send = true;
+#if MIDI_SAM2695_ENABLED
+                stopMidiPlayback("vision");
+#endif
 #if RGB_ENABLED
                 g_rgb.setScene(RgbScene::Thinking);
 #endif
@@ -1135,6 +1221,9 @@ void loop() {
                 }
                 g_rec.start();
                 g_listening_start_ms = millis();
+                g_auto_listening_after_wake = false;
+                g_auto_listening_heard_voice = false;
+                g_auto_listening_last_voice_ms = 0;
                 setState(State::Listening, faces::FACE_LISTENING);
                 break;
             }
@@ -1143,20 +1232,22 @@ void loop() {
             // 検出したら ack beep の後に通常の発話録音へ入る。
             if (!g_wait_release_after_auto_send &&
                 millis() >= g_next_wake_listen_ms &&
-                WiFiManager::ensureConnected()) {
+                g_blink_started_ms == 0 &&
+                g_micro_started_ms == 0 &&
 #if MIDI_SAM2695_ENABLED
-                stopMidiPlayback("wake listen");
+                !g_midi.isPlaying() &&
 #endif
+                WiFiManager::ensureConnected()) {
                 Serial.println("[WAKE] listen start");
                 g_rec.start();
                 g_wake_listening_start_ms = millis();
-                setState(State::WakeListening, -1, false);
+                enterBackgroundWakeListening();
                 break;
             }
 #endif
 #if !defined(OFFLINE_MODE) || !OFFLINE_MODE
             // 待機中: Wi-Fi 回復後だけ /pull を叩く (未接続時の TCP は assert 原因)。
-            if (WiFiManager::ensureConnected()) {
+            if (!midi_playing && WiFiManager::ensureConnected()) {
                 if (WiFiManager::consumeReconnectEvent()) {
                     g_last_status_ms = millis() - STATUS_INTERVAL_MS - 1;
                 }
@@ -1186,7 +1277,7 @@ void loop() {
 
         case State::WakeListening: {
             g_rec.poll();
-            drawMicLevel(g_rec.lastPeak(), g_rec.lastRms());
+            logMicLevel(g_rec.lastPeak(), g_rec.lastRms());
 
             // 待ち受け中でも手動 PTT が来たら即座に本録音へ切替。
             if ((pressed || remote_ptt_edge) && !g_wait_release_after_auto_send) {
@@ -1194,6 +1285,9 @@ void loop() {
                 g_rec.stop();
                 g_rec.start();
                 g_listening_start_ms = millis();
+                g_auto_listening_after_wake = false;
+                g_auto_listening_heard_voice = false;
+                g_auto_listening_last_voice_ms = 0;
                 g_wake_listening_start_ms = 0;
                 setState(State::Listening, faces::FACE_LISTENING);
                 break;
@@ -1235,10 +1329,13 @@ void loop() {
 #endif
                     g_rec.start();
                     g_listening_start_ms = millis();
+                    g_auto_listening_after_wake = true;
+                    g_auto_listening_heard_voice = false;
+                    g_auto_listening_last_voice_ms = g_listening_start_ms;
                     setState(State::Listening, faces::FACE_LISTENING);
                 } else {
                     g_next_wake_listen_ms = millis() + WAKE_POLL_INTERVAL_MS;
-                    setState(State::Idle, faces::FACE_IDLE, false);
+                    leaveBackgroundWakeListening();
                 }
             }
             break;
@@ -1247,31 +1344,61 @@ void loop() {
         case State::Listening: {
             g_rec.poll();
             drawMicLevel(g_rec.lastPeak(), g_rec.lastRms());
+            const uint32_t listen_elapsed_ms =
+                g_listening_start_ms != 0 ? millis() - g_listening_start_ms : 0;
+            if (g_auto_listening_after_wake) {
+                const bool voice_now =
+                    g_rec.lastRms() >= AUTO_LISTEN_RMS_THRESHOLD ||
+                    g_rec.lastPeak() >= AUTO_LISTEN_PEAK_THRESHOLD;
+                if (voice_now) {
+                    g_auto_listening_heard_voice = true;
+                    g_auto_listening_last_voice_ms = millis();
+                }
+            }
             const bool rec_overflow = g_rec.isFull();
             const bool rec_timeout =
                 g_listening_start_ms != 0 &&
                 millis() - g_listening_start_ms >= ((uint32_t)MAX_REC_SECONDS * 1000u + 500u);
-            // ローカルボタンもリモコンボタンも離されたら送信
-            if ((!pressed && !g_remote.btnA()) || rec_overflow || rec_timeout) {
-                const uint32_t rec_dur =
-                    g_listening_start_ms != 0 ? millis() - g_listening_start_ms : 0;
-                if (rec_overflow || rec_timeout) {
-                    Serial.printf("[REC ] %s (%us): auto-sending\n",
-                                  rec_overflow ? "Buffer full" : "Timeout",
-                                  (unsigned)MAX_REC_SECONDS);
+            const bool auto_timeout =
+                g_auto_listening_after_wake &&
+                listen_elapsed_ms >= AUTO_LISTEN_MAX_MS;
+            const bool auto_silence_done =
+                g_auto_listening_after_wake &&
+                g_auto_listening_heard_voice &&
+                listen_elapsed_ms >= AUTO_LISTEN_MIN_MS &&
+                millis() - g_auto_listening_last_voice_ms >= AUTO_LISTEN_SILENCE_MS;
+            const bool manual_release_done =
+                !g_auto_listening_after_wake && !pressed && !g_remote.btnA();
+            const bool should_send =
+                manual_release_done || auto_silence_done || auto_timeout ||
+                rec_overflow || rec_timeout;
+
+            if (should_send) {
+                if (rec_overflow || rec_timeout || auto_timeout || auto_silence_done) {
+                    Serial.printf("[REC ] %s: auto-sending\n",
+                                  rec_overflow ? "Buffer full" :
+                                  rec_timeout ? "Timeout" :
+                                  auto_timeout ? "Wake listen timeout" :
+                                  "Wake listen silence");
                     g_wait_release_after_auto_send = true;
-                    g_face.show(faces::FACE_REC_OVERFLOW);
-                    playOverflowBeep();
+                    if (rec_overflow || rec_timeout) {
+                        g_face.show(faces::FACE_REC_OVERFLOW);
+                        playOverflowBeep();
+                    }
                 }
                 const size_t n = g_rec.stop();
-                Serial.printf("[REC ] stop bytes=%u dur=%u overflow=%d timeout=%d touch=%d remote=%d\n",
+                Serial.printf("[REC ] stop bytes=%u dur=%u overflow=%d timeout=%d auto=%d touch=%d remote=%d\n",
                               (unsigned)n,
-                              (unsigned)rec_dur,
+                              (unsigned)listen_elapsed_ms,
                               rec_overflow ? 1 : 0,
                               rec_timeout ? 1 : 0,
+                              g_auto_listening_after_wake ? 1 : 0,
                               pressed ? 1 : 0,
                               g_remote.btnA() ? 1 : 0);
                 g_listening_start_ms = 0;
+                g_auto_listening_after_wake = false;
+                g_auto_listening_heard_voice = false;
+                g_auto_listening_last_voice_ms = 0;
 
                 // ほぼ空の録音 (0.1 秒未満 = タップして即離した等) は音声を
                 // 含み得ないので、サーバへ送らず「聞こえなかった」顔だけ出す。
@@ -1386,6 +1513,9 @@ void loop() {
 #endif
                 g_sleep_enter_ms = millis();
                 g_sleep_head_released = false;
+                g_sleep_touch_wake_start_ms = 0;
+                g_sleep_remote_wake_start_ms = 0;
+                g_sleep_head_wake_start_ms = 0;
                 scheduleNextSleepMurmur(true);
                 g_wait_release_after_auto_send = true;
                 setState(State::Sleep, faces::F_SLEEPING);
@@ -1424,19 +1554,46 @@ void loop() {
         case State::Sleep: {
             const uint32_t now = millis();
             const bool head_pressed = M5StackChan.TouchSensor.isPressed();
+            const bool sleep_old_enough = now - g_sleep_enter_ms >= SLEEP_WAKE_MIN_AGE_MS;
             if (!head_pressed) {
                 g_sleep_head_released = true;
             }
             if (!pressed && !g_remote.btnA() && !head_pressed) {
                 g_wait_release_after_auto_send = false;
             }
+
+            if (sleep_old_enough && pressed) {
+                if (g_sleep_touch_wake_start_ms == 0) g_sleep_touch_wake_start_ms = now;
+            } else {
+                g_sleep_touch_wake_start_ms = 0;
+            }
+            if (sleep_old_enough && g_remote.btnA()) {
+                if (g_sleep_remote_wake_start_ms == 0) g_sleep_remote_wake_start_ms = now;
+            } else {
+                g_sleep_remote_wake_start_ms = 0;
+            }
+            if (sleep_old_enough && head_pressed) {
+                if (g_sleep_head_wake_start_ms == 0) g_sleep_head_wake_start_ms = now;
+            } else if (!head_pressed) {
+                g_sleep_head_wake_start_ms = 0;
+            }
+
+            const bool touch_wake =
+                g_sleep_touch_wake_start_ms != 0 &&
+                now - g_sleep_touch_wake_start_ms >= SLEEP_TOUCH_WAKE_HOLD_MS;
+            const bool remote_wake =
+                g_sleep_remote_wake_start_ms != 0 &&
+                now - g_sleep_remote_wake_start_ms >= SLEEP_REMOTE_WAKE_HOLD_MS;
             const bool head_wake =
-                head_pressed &&
-                g_sleep_head_released &&
-                now - g_sleep_enter_ms >= 1500;
-            if ((pressed || remote_ptt_edge || head_wake) && !g_wait_release_after_auto_send) {
+                g_sleep_head_wake_start_ms != 0 &&
+                now - g_sleep_head_wake_start_ms >= SLEEP_HEAD_WAKE_HOLD_MS;
+
+            if (touch_wake || remote_wake || head_wake) {
                 Serial.println("[SLEEP] wake");
                 g_wait_release_after_auto_send = true;
+                g_sleep_touch_wake_start_ms = 0;
+                g_sleep_remote_wake_start_ms = 0;
+                g_sleep_head_wake_start_ms = 0;
 #if RGB_ENABLED
                 g_rgb.setScene(RgbScene::Idle);
 #endif
@@ -1505,6 +1662,9 @@ void loop() {
 #endif
         g_sleep_enter_ms = millis();
         g_sleep_head_released = false;
+        g_sleep_touch_wake_start_ms = 0;
+        g_sleep_remote_wake_start_ms = 0;
+        g_sleep_head_wake_start_ms = 0;
         scheduleNextSleepMurmur(true);
         g_wait_release_after_auto_send = true;
         setState(State::Sleep, faces::F_SLEEPING);
