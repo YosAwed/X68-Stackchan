@@ -165,4 +165,27 @@ inline void playLiftBeep() {
                          /*mod_ratio=*/3.0f, /*mod_index=*/2.0f);
 }
 
+// Idle 中の鼻歌。倍音を抑えた柔らかい音色で「ふんふふ〜ん♪」と口ずさむ。
+inline void playHummingTune() {
+    static const detail::Note kHum[] = {
+        { 659.25f, 140 },  // E5
+        { 784.00f, 140 },  // G5
+        { 880.00f, 200 },  // A5
+        { 784.00f, 140 },  // G5
+        { 659.25f, 260 },  // E5 (余韻)
+    };
+    detail::playSequence(kHum, 5, /*vol=*/90,
+                         /*mod_ratio=*/1.0f, /*mod_index=*/0.8f);
+}
+
+// 伸びの「んーっ」。ゆっくりした上昇 2 音で背伸び感を出す。
+inline void playStretchChime() {
+    static const detail::Note kStretch[] = {
+        { 523.30f, 180 },  // C5
+        { 659.25f, 260 },  // E5
+    };
+    detail::playSequence(kStretch, 2, /*vol=*/100,
+                         /*mod_ratio=*/1.0f, /*mod_index=*/0.6f);
+}
+
 } // namespace stackchan

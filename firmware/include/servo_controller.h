@@ -30,9 +30,15 @@
 #define SERVO_WAGGLE_ENABLED 0
 #endif
 
+#ifndef SERVO_EMOTE_MOTION_ENABLED
+#define SERVO_EMOTE_MOTION_ENABLED 0
+#endif
+
 #ifndef SERVO_IDLE_MOTION_DEBUG
 #define SERVO_IDLE_MOTION_DEBUG 0
 #endif
+
+#include <cstring>
 
 namespace stackchan {
 
@@ -101,6 +107,7 @@ public:
         target_pitch_ = constrain(pitch, -1.0f, 1.0f);
         lerp_speed_   = speed;
         in_idle_      = false;
+        emote_motion_ = EmoteMotion::None;   // 明示指定はスクリプト演出より優先
     }
 
     // --------------------------------------------------------
@@ -166,6 +173,7 @@ public:
         in_idle_       = false;
         waggle_start_ms_ = 0;
         dizzy_start_ms_  = 0;
+        emote_motion_    = EmoteMotion::None;
         idle_nudge_return_ms_ = 0;
         writePos(ID_YAW,   YAW_CTR,   500);
         writePos(ID_PITCH, PITCH_CTR, 500);
@@ -187,10 +195,49 @@ public:
 #endif
     }
 
+    // ---- emote 連動の発話演出 ------------------------------
+    // 発話開始時に X-Stackchan-Emote タグを渡すと、最初の 1〜2 秒だけ
+    // 感情に応じた首の動き (joy=弾む頷き / sad=うつむき / surprised=
+    // ビクッと上向き / shy=もじもじ / sleepy=こっくり) を再生する。
+    // 終了後は Speaking 基本姿勢に戻り、lipsync 頷きへ引き継ぐ。
+    enum class EmoteMotion { None, Joy, Sad, Surprised, Bashful, Sleepy, Stretch };
+
+    void startEmoteMotion(const char* emote) {
+#if SERVO_EMOTE_MOTION_ENABLED
+        EmoteMotion m = EmoteMotion::None;
+        if (emote && *emote) {
+            if      (!strcmp(emote, "joy"))         m = EmoteMotion::Joy;
+            else if (!strcmp(emote, "sad"))         m = EmoteMotion::Sad;
+            else if (!strcmp(emote, "surprised") ||
+                     !strcmp(emote, "panic"))       m = EmoteMotion::Surprised;
+            else if (!strcmp(emote, "shy") ||
+                     !strcmp(emote, "embarrassed")) m = EmoteMotion::Bashful;
+            else if (!strcmp(emote, "sleepy"))      m = EmoteMotion::Sleepy;
+        }
+        if (m == EmoteMotion::None) return;
+        beginScriptedMotion(m);
+        Serial.printf("[SRV ] emote motion: %s\n", emote);
+#else
+        (void)emote;
+#endif
+    }
+
+    // Idle レアイベント「伸び」: ぐーっと上を向いてから戻る (~2.6 秒)
+    void startStretch() {
+#if SERVO_WAGGLE_ENABLED
+        beginScriptedMotion(EmoteMotion::Stretch);
+#endif
+    }
+
+    bool emoteMotionActive() const { return emote_motion_ != EmoteMotion::None; }
+
     // 発話 RMS (0..1) に連動した微小な頷き
+    // emote モーション再生中はそちらの軌道を優先する。
     void setSpeakLipWeight(float w) {
 #if SERVO_LIPSYNC_MOTION_ENABLED
-        if (!in_idle_) target_pitch_ = speak_base_ + w * 0.15f;
+        if (!in_idle_ && emote_motion_ == EmoteMotion::None) {
+            target_pitch_ = speak_base_ + w * 0.15f;
+        }
 #else
         (void)w;
 #endif
@@ -235,6 +282,63 @@ public:
             } else {
                 dizzy_start_ms_ = 0;
                 goIdle();
+            }
+        }
+
+        // emote 連動モーション (発話冒頭 / 伸び)
+        if (emote_motion_ != EmoteMotion::None) {
+            const uint32_t elapsed = now - emote_start_ms_;
+            if (elapsed < emoteMotionDuration(emote_motion_)) {
+                const float t = elapsed / 1000.0f;
+                lerp_speed_ = LERP_FAST;
+                switch (emote_motion_) {
+                    case EmoteMotion::Joy:
+                        // 弾む頷き: 減衰する縦揺れ (約 2.2 Hz)
+                        target_yaw_   = 0.0f;
+                        target_pitch_ = speak_base_ +
+                                        0.18f * sinf(t * 13.8f) * expf(-t * 1.1f);
+                        break;
+                    case EmoteMotion::Sad:
+                        // しゅんとうつむく: 0.6 秒かけて下向き + わずかに首を傾ける
+                        target_yaw_   = 0.10f * fminf(t / 0.6f, 1.0f);
+                        target_pitch_ = speak_base_ - 0.32f * fminf(t / 0.6f, 1.0f);
+                        break;
+                    case EmoteMotion::Surprised:
+                        // ビクッと上を向いてから落ち着く
+                        target_yaw_   = 0.0f;
+                        target_pitch_ = speak_base_ + 0.35f * expf(-t * 2.2f);
+                        break;
+                    case EmoteMotion::Bashful:
+                        // もじもじ: 少しうつむきつつ左右にゆっくり揺れる
+                        target_yaw_   = 0.15f * sinf(t * 5.5f);
+                        target_pitch_ = speak_base_ - 0.12f;
+                        break;
+                    case EmoteMotion::Sleepy:
+                        // こっくり: ゆっくり下を向いていく
+                        target_yaw_   = 0.0f;
+                        target_pitch_ = speak_base_ - 0.28f * fminf(t / 1.2f, 1.0f);
+                        break;
+                    case EmoteMotion::Stretch:
+                        // 伸び: 1 秒かけて上を向き、少し保持して、ゆっくり戻る
+                        target_yaw_ = 0.0f;
+                        if (t < 1.0f)      target_pitch_ = 0.40f * t;
+                        else if (t < 1.6f) target_pitch_ = 0.40f;
+                        else               target_pitch_ = 0.40f * (1.0f - (t - 1.6f) / 1.0f);
+                        break;
+                    default:
+                        break;
+                }
+            } else {
+                const bool was_stretch = emote_motion_ == EmoteMotion::Stretch;
+                emote_motion_ = EmoteMotion::None;
+                if (was_stretch) {
+                    goIdle();
+                } else {
+                    // 発話姿勢に戻して lipsync 頷きへ引き継ぐ
+                    target_yaw_   = 0.0f;
+                    target_pitch_ = speak_base_;
+                    lerp_speed_   = LERP_FAST;
+                }
             }
         }
 
@@ -349,6 +453,8 @@ private:
     uint32_t idle_interval_ms_ = 3000;
     uint32_t waggle_start_ms_  = 0;
     uint32_t dizzy_start_ms_   = 0;
+    EmoteMotion emote_motion_  = EmoteMotion::None;
+    uint32_t emote_start_ms_   = 0;
     uint32_t idle_nudge_return_ms_ = 0;
     uint32_t torque_release_at_ms_ = 0;
     uint32_t suppress_auto_torque_until_ms_ = 0;
@@ -358,6 +464,27 @@ private:
     bool     idle_hold_torque_     = false;
     static constexpr uint32_t WAGGLE_DURATION_MS = 1050;  // 3 phases × 350 ms
     static constexpr uint32_t DIZZY_DURATION_MS  = 1400;
+
+    void beginScriptedMotion(EmoteMotion m) {
+        emote_motion_    = m;
+        emote_start_ms_  = millis();
+        waggle_start_ms_ = 0;
+        dizzy_start_ms_  = 0;
+        in_idle_         = false;
+        idle_nudge_return_ms_ = 0;
+    }
+
+    static uint32_t emoteMotionDuration(EmoteMotion m) {
+        switch (m) {
+            case EmoteMotion::Joy:       return 1600;
+            case EmoteMotion::Sad:       return 2000;
+            case EmoteMotion::Surprised: return 1100;
+            case EmoteMotion::Bashful:   return 2000;
+            case EmoteMotion::Sleepy:    return 2000;
+            case EmoteMotion::Stretch:   return 2600;
+            default:                     return 0;
+        }
+    }
 
     uint32_t firstIdleMotionInterval() const {
 #if SERVO_IDLE_MOTION_ENABLED

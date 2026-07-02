@@ -39,6 +39,9 @@ static constexpr uint32_t MAX_REC_SECONDS = 10;
 #define WAKE_WORD_ENABLED 0
 static constexpr uint32_t WAKE_LISTEN_MS = 1800;
 static constexpr uint32_t WAKE_POLL_INTERVAL_MS = 3500;
+// ウェイクワード検出時に beep の代わりに「なぁに?」等の短い返事を再生する
+// (母艦 /speak で合成し、PSRAM にキャッシュ。省略時 1)。
+#define WAKE_REPLY_ENABLED 1
 
 // ---- スピーカ -----------------------------------------------
 static constexpr uint8_t  SPK_VOLUME = 180; // 0..255
@@ -64,6 +67,15 @@ static constexpr uint8_t  SPK_VOLUME = 180; // 0..255
 #define SERVO_WAGGLE_ENABLED 1
 // 発話 RMS (口パク) に連動した微小な頷き
 #define SERVO_LIPSYNC_MOTION_ENABLED 1
+// 発話冒頭に emote 連動の首の動き (joy=弾む頷き / sad=うつむき /
+// surprised=ビクッと上向き / shy=もじもじ / sleepy=こっくり)
+#define SERVO_EMOTE_MOTION_ENABLED 1
+
+// ---- Idle レアイベント (鼻歌 / 伸び) ------------------------
+// 2〜5 分放置されると、たまに鼻歌を歌ったり伸びをする (省略時 1)。
+#define IDLE_EVENT_ENABLED 1
+#define IDLE_EVENT_MIN_MS (2UL * 60 * 1000)
+#define IDLE_EVENT_MAX_MS (5UL * 60 * 1000)
 
 // ---- Power management ---------------------------------------
 // 0: Idle 30分後はソフトSleepに入り、タッチ/リモコンで復帰できる。

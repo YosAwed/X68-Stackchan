@@ -88,6 +88,20 @@ using namespace stackchan;
 #ifndef WAKE_POLL_INTERVAL_MS
 #define WAKE_POLL_INTERVAL_MS 3500
 #endif
+// ウェイクワード検出時に beep の代わりに「なぁに?」等の短い返事を再生する。
+#ifndef WAKE_REPLY_ENABLED
+#define WAKE_REPLY_ENABLED 1
+#endif
+// Idle 中のレアイベント (鼻歌 / 伸び)。低頻度で勝手に何かしている感を出す。
+#ifndef IDLE_EVENT_ENABLED
+#define IDLE_EVENT_ENABLED 1
+#endif
+#ifndef IDLE_EVENT_MIN_MS
+#define IDLE_EVENT_MIN_MS (2UL * 60 * 1000)
+#endif
+#ifndef IDLE_EVENT_MAX_MS
+#define IDLE_EVENT_MAX_MS (5UL * 60 * 1000)
+#endif
 
 static PekekoFace     g_face;
 static AudioRecorder  g_rec;
@@ -250,6 +264,49 @@ static inline uint32_t randomDelayMs(uint32_t min_ms, uint32_t max_ms) {
     return min_ms + (uint32_t)(rand() % (max_ms - min_ms + 1));
 }
 
+// ---- Idle 中のレアイベント (鼻歌 / 伸び) ----
+// 2〜5 分放置されると、たまに鼻歌をふんふん歌ったり、んーっと伸びをする。
+static uint32_t g_next_idle_event_ms = 0;
+
+static inline void scheduleNextIdleEvent() {
+    g_next_idle_event_ms =
+        millis() + randomDelayMs(IDLE_EVENT_MIN_MS, IDLE_EVENT_MAX_MS);
+}
+
+static void maybePlayIdleEvent() {
+#if !IDLE_EVENT_ENABLED
+    return;
+#else
+    const uint32_t now = millis();
+    if (g_next_idle_event_ms == 0 || now < g_next_idle_event_ms) return;
+    scheduleNextIdleEvent();
+    // まばたき / マイクロ表情の最中なら今回は見送る
+    if (g_blink_started_ms != 0 || g_micro_started_ms != 0) return;
+#if MIDI_SAM2695_ENABLED
+    if (g_midi.isPlaying()) return;
+#endif
+    if ((rand() & 1) == 0) {
+        // 鼻歌: ご機嫌な様子で「ふんふふ〜ん♪」
+        Serial.println("[IDLE] event: humming");
+        g_face.show(faces::F_SOFT_SMILE);
+        flashIdleMicroRgb();
+        playHummingTune();   // 再生完了まで block (約 1 秒)
+        g_reaction_active = true;
+        g_reaction_end_ms = millis() + 800;
+    } else {
+        // 伸び: んーっと上を向いてゆっくり戻る
+        Serial.println("[IDLE] event: stretch");
+        g_face.show(faces::F_YAWN_SMALL);
+#if SERVO_ENABLED
+        g_servo.startStretch();
+#endif
+        playStretchChime();
+        g_reaction_active = true;
+        g_reaction_end_ms = millis() + 2600;
+    }
+#endif
+}
+
 static inline void scheduleNextSleepMurmur(bool initial) {
 #if SLEEP_MURMUR_ENABLED
     g_sleep_next_murmur_ms = millis() + (
@@ -376,6 +433,7 @@ static void setState(State s, int face_id = -1, bool note_activity = true) {
     if (s == State::Idle) {
         scheduleNextBlink();
         scheduleNextMicro();
+        scheduleNextIdleEvent();
     } else {
         g_blink_started_ms = 0;
         g_micro_started_ms = 0;
@@ -617,6 +675,10 @@ static void playWavWithLipsync(const uint8_t* wav, size_t size,
 #if RGB_ENABLED
     g_rgb.setSpeakEmote(emote);
 #endif
+#if SERVO_ENABLED
+    // 発話冒頭の 1〜2 秒だけ emote に応じた首の動き (joy=弾む頷き など)
+    g_servo.startEmoteMotion(emote);
+#endif
 
     while (M5.Speaker.isPlaying()) {
         const uint32_t now = millis();
@@ -708,6 +770,41 @@ static void playSleepMurmurIfDue() {
 #endif
 #endif
 }
+
+#if WAKE_WORD_ENABLED && WAKE_REPLY_ENABLED && (!defined(OFFLINE_MODE) || !OFFLINE_MODE)
+// ウェイクワード検出時の返事。「なぁに?」等の短い WAV を /speak で合成し、
+// PSRAM にキャッシュして 2 回目以降は HTTP なしで即再生する。
+// 合成に失敗した時は従来どおり ack beep にフォールバック。
+static const char* const kWakeReplies[] = {
+    "なぁに？",
+    "はーい！",
+    "呼んだ？",
+};
+constexpr int kWakeReplyCount = sizeof(kWakeReplies) / sizeof(kWakeReplies[0]);
+static uint8_t* g_wake_reply_wav[kWakeReplyCount]  = {};
+static size_t   g_wake_reply_size[kWakeReplyCount] = {};
+
+static void playWakeReply() {
+    const int idx = rand() % kWakeReplyCount;
+    if (!g_wake_reply_wav[idx]) {
+        ChatResponse r = ChatClient::speakText(String(kWakeReplies[idx]));
+        if (r.ok && r.body) {
+            // body の所有権をキャッシュへ移す (以後 free しない)
+            g_wake_reply_wav[idx]  = r.body;
+            g_wake_reply_size[idx] = r.body_size;
+            Serial.printf("[WAKE] reply cached: '%s' (%u bytes)\n",
+                          kWakeReplies[idx], (unsigned)r.body_size);
+        } else {
+            if (r.body) free(r.body);
+            Serial.printf("[WAKE] reply fetch failed status=%d -> beep\n",
+                          r.http_status);
+            playAckBeep();
+            return;
+        }
+    }
+    playWavWithLipsync(g_wake_reply_wav[idx], g_wake_reply_size[idx], "joy");
+}
+#endif
 
 static void handleHttpError(int status) {
     if (status == 0) {
@@ -926,6 +1023,10 @@ void loop() {
                 break;
             }
 
+            // レアイベント (鼻歌 / 伸び)。発火したら反応保持に入る。
+            maybePlayIdleEvent();
+            if (g_reaction_active) break;
+
             // IMU: 激しいシェイク → 目回し、持ち上げ/小突き → 驚き。
             {
                 const auto imu_ev = g_imu.update();
@@ -1125,7 +1226,13 @@ void loop() {
                 }
 #endif
                 if (detected) {
+#if WAKE_REPLY_ENABLED && (!defined(OFFLINE_MODE) || !OFFLINE_MODE)
+                    // 「なぁに?」と返事してから録音に入る (呼びかけへの応答感)
+                    setState(State::Speaking);
+                    playWakeReply();
+#else
                     playAckBeep();
+#endif
                     g_rec.start();
                     g_listening_start_ms = millis();
                     setState(State::Listening, faces::FACE_LISTENING);
