@@ -113,6 +113,14 @@ def _tts_cache_version() -> str:
             f"intonation={settings.VOICEVOX_INTONATION_SCALE}",
             f"volume={settings.VOICEVOX_VOLUME_SCALE}",
         ])
+    elif settings.TTS_BACKEND == "kokoro":
+        parts.extend([
+            f"model={settings.KOKORO_MODEL}",
+            f"voices={settings.KOKORO_VOICES}",
+            f"vocab={settings.KOKORO_VOCAB_CONFIG or 'default'}",
+            f"voice={settings.KOKORO_VOICE}",
+            f"speed={settings.KOKORO_SPEED}",
+        ])
     return "|".join(str(p) for p in parts)
 
 

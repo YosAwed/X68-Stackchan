@@ -5,6 +5,7 @@ load_dotenv() の前後どちらで import しても OK):
 
     irodori (default) — tts_irodori.TTS (CUDA / WSL2 用)
     voicevox          — tts_voicevox.TTS (Mac mini など非 CUDA 用)
+    kokoro            — tts_kokoro.TTS (ONNX / Mac mini など非 CUDA 用)
     macsay            — tts_macsay.TTS (macOS 標準 say / afconvert)
 
 main.py からは `from tts import TTS; tts = TTS()` で透過的に切替わる。
@@ -27,10 +28,13 @@ def TTS(*args, **kwargs):
         from tts_irodori import TTS as _Real
     elif backend == "voicevox":
         from tts_voicevox import TTS as _Real
+    elif backend == "kokoro":
+        from tts_kokoro import TTS as _Real
     elif backend == "macsay":
         from tts_macsay import TTS as _Real
     else:
         raise ValueError(
-            f"unknown TTS_BACKEND: {backend!r} (expected 'irodori', 'voicevox', or 'macsay')"
+            f"unknown TTS_BACKEND: {backend!r} "
+            "(expected 'irodori', 'voicevox', 'kokoro', or 'macsay')"
         )
     return _Real(*args, **kwargs)

@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     # ---- TTS backend selection ----
     # irodori  = CUDA in-process (Irodori-TTS-Lite)
     # voicevox = HTTP (Mac mini etc.)
+    # kokoro   = in-process ONNX (Mac mini / CPU)
     # macsay   = macOS built-in say + afconvert (local smoke-test backend)
     TTS_BACKEND: str = "irodori"
 
@@ -65,6 +66,13 @@ class Settings(BaseSettings):
     VOICEVOX_PITCH_SCALE: float = Field(default=0.0, ge=-0.15, le=0.15)
     VOICEVOX_INTONATION_SCALE: float = Field(default=1.0, ge=0.0)
     VOICEVOX_VOLUME_SCALE: float = Field(default=1.0, gt=0.0)
+
+    # ---- Kokoro ONNX (when TTS_BACKEND=kokoro) ----
+    KOKORO_MODEL: str = "models/kokoro/kokoro-v1.0.onnx"
+    KOKORO_VOICES: str = "models/kokoro/voices-v1.0.bin"
+    KOKORO_VOCAB_CONFIG: str | None = None
+    KOKORO_VOICE: str = "jf_alpha"
+    KOKORO_SPEED: float = Field(default=1.0, gt=0.0)
 
     # ---- macOS say (when TTS_BACKEND=macsay) ----
     MACSAY_VOICE: str = "Kyoko"

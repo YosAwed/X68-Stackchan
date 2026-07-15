@@ -47,7 +47,7 @@ M5Stack 公式スタックちゃん (CoreS3 SE) を、X68000 擬人化キャラ 
 | 頭から手を離した               | F_SOFT_SMILE 600ms → Idle                         | LED 消灯                              |
 | Wi-Fi 失敗 / サーバ 5xx 等     | F_CONCERNED / F_DIZZY / F_BORED 等                 | 失敗系ビープ (種類別)                |
 
-LED の 12 個は全て `M5StackChan.showRgbColor()` で同色制御、撫で中は 2.5Hz の sin で脈動する。
+LED の 12 個は RGB コントローラから一括制御し、頭頂に触れた直後から消え切らない呼吸灯で脈動する。
 Sleep に入った後は、初回 45〜150 秒、その後 2〜6 分ごとのランダム間隔で、寝息や短い寝言を母艦の `/speak` へ投げて再生する。`OFFLINE_MODE=1` や hard deep sleep 中は発話しない。
 
 ### 最小確認手順 (段階的に切り分け)

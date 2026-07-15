@@ -1,4 +1,4 @@
-# セットアップ手順 (Mac mini + macsay / VOICEVOX 代替構成)
+# セットアップ手順 (Mac mini + macsay / VOICEVOX / Kokoro 代替構成)
 
 > こちらは **代替構成**。メインは [setup.md](setup.md) (Windows + WSL2 + CUDA / Irodori-TTS-Lite)。
 > Mac mini など NVIDIA GPU が無い母艦で動かしたい場合のみこのファイルに従う。
@@ -23,6 +23,9 @@
 Mac だけでまず実機疎通を確認するなら、追加サービス不要の `macsay` を使う。これは macOS の `say` と `afconvert` で 16 kHz / mono / PCM16 の WAV を返すテスト用 backend。
 
 キャラクター声にしたい場合は `voicevox` を使う。
+
+軽量なローカル ONNX 音声も比較したい場合は `kokoro` を使える。通常運用の
+切替前に、後述の A/B 比較ツールで日本語の読みと声質を確認することを推奨。
 
 ### 1-2. VOICEVOX engine を起動する場合
 
@@ -84,6 +87,43 @@ curl -D - -X POST -F "audio=@hello.wav" http://localhost:8000/chat --output repl
 ```
 
 `reply.wav` がスタックちゃんの声になっていれば OK。`X-Stackchan-Timing` で LLM / TTS / total の処理時間を確認できる。
+
+### 1-4a. Kokoro をVOICEVOXとA/B比較する
+
+`requirements-macmini.txt` の導入後、日本語G2P用辞書とKokoroモデルを一度だけ取得する。
+
+```bash
+cd server
+.venv/bin/python -m unidic download
+mkdir -p models/kokoro
+curl -L -o models/kokoro/kokoro-v1.0.onnx \
+  https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx
+curl -L -o models/kokoro/voices-v1.0.bin \
+  https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin
+```
+
+VOICEVOX Engineを起動した状態で比較ツールを実行する。
+
+```bash
+.venv/bin/python compare_tts.py
+```
+
+`data/tts_ab/<日時>/` に、同じ番号の `NN_voicevox.wav` と `NN_kokoro.wav`、
+および `report.csv` / `report.json` が生成される。任意の文だけ比較する場合:
+
+```bash
+.venv/bin/python compare_tts.py \
+  --text "ぺけ子ちゃん、おはよう。" \
+  --text "X68000を起動します。"
+```
+
+試聴後にKokoroへ切り替える場合は `.env` を次のようにしてFastAPIを再起動する。
+
+```dotenv
+TTS_BACKEND=kokoro
+KOKORO_VOICE=jf_alpha
+KOKORO_SPEED=1.00
+```
 
 ### 1-5. Mac mini の IP を控える
 

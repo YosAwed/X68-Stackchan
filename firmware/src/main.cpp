@@ -1056,6 +1056,10 @@ void loop() {
                 if (M5StackChan.TouchSensor.isPressed()) {
                     if (g_headpat_idle_press_ms == 0) {
                         g_headpat_idle_press_ms = now;
+#if RGB_ENABLED
+                        // 撫で判定 (800ms) を待たず、触れた瞬間から点灯する。
+                        g_rgb.setScene(RgbScene::Headpat);
+#endif
                     } else if (now - g_headpat_idle_press_ms >= 800 &&
                                now - g_headpat_idle_cool_ms >= 2500) {
                         headpat_fallback = true;
@@ -1063,6 +1067,11 @@ void loop() {
                     }
                 } else {
                     g_headpat_idle_press_ms = 0;
+#if RGB_ENABLED
+                    if (touch_ev == TouchHandler::Event::None) {
+                        g_rgb.endHeadpatPreview();
+                    }
+#endif
                 }
                 if (touch_ev == TouchHandler::Event::Swipe) {
                     // スワイプ: 喜び表情 + 首振り + 黄色 LED バースト
@@ -1080,12 +1089,13 @@ void loop() {
                     // ホールド: headpat 開始 (はにかみ → とろけ → 眠り)
                     g_reaction_active = false;
                     playHeadpatChime();
-                    g_headpat_start_ms = now;
+                    // タッチ検出の瞬間を基準にし、判定待ちの 800ms も
+                    // 撫で時間に含める。
+                    g_headpat_start_ms = g_headpat_idle_press_ms != 0
+                                             ? g_headpat_idle_press_ms
+                                             : now;
                     g_headpat_last_press_ms = now;
                     setState(State::Headpat, faces::F_BASHFUL);
-#if RGB_ENABLED
-                    g_rgb.setScene(RgbScene::Praise);
-#endif
                     Serial.println("[HEADPAT] start");
                     break;
                 }
@@ -1480,7 +1490,13 @@ void loop() {
                 g_rgb.setScene(RgbScene::PraiseEnd);
 #endif
                 g_face.show(faces::F_SOFT_SMILE);
-                delay(600);
+                const uint32_t fade_start = millis();
+                while (millis() - fade_start < 600) {
+#if RGB_ENABLED
+                    g_rgb.update();
+#endif
+                    delay(10);
+                }
                 setState(State::Idle, faces::FACE_IDLE);
                 break;
             }
@@ -1523,31 +1539,6 @@ void loop() {
                 break;
             }
 
-            // RGB: 段階で色味、脈動 (sin 2.5Hz 相当) で「呼吸」感
-            // rgb_controller の Praise シーンで制御するが、Headpat 中は
-            // 直接色を指定して段階遷移を再現する。
-            {
-                const float t_sec = held_ms / 1000.0f;
-                const float pulse = 0.55f + 0.45f * sinf(t_sec * 2.5f);  // 0.10..1.00
-                uint8_t r, g, b;
-                if (held_ms < 1500) {
-                    // 薄いピンク
-                    r = (uint8_t)(180 * pulse);
-                    g = (uint8_t)( 60 * pulse);
-                    b = (uint8_t)(100 * pulse);
-                } else if (held_ms < 3000) {
-                    // 暖かいオレンジ
-                    r = (uint8_t)(255 * pulse);
-                    g = (uint8_t)(120 * pulse);
-                    b = (uint8_t)( 40 * pulse);
-                } else {
-                    // 紫マゼンタ (夢見心地)
-                    r = (uint8_t)(150 * pulse);
-                    g = (uint8_t)( 40 * pulse);
-                    b = (uint8_t)(200 * pulse);
-                }
-                M5StackChan.showRgbColor(r, g, b);
-            }
             break;
         }
 
@@ -1681,9 +1672,7 @@ void loop() {
     }
 #endif
 #if RGB_ENABLED
-    if (g_state != State::Headpat) {
-        g_rgb.update();
-    }
+    g_rgb.update();
 #endif
 
     // まばたきは State::Idle 内の updateIdleBlink() が担当するため、

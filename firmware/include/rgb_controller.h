@@ -10,6 +10,7 @@
 //  Shaken   : 赤の点滅
 //  Error    : 赤フラッシュ
 //  Praise   : 褒められた時のピンクパルス (1.5秒)
+//  Headpat  : 頭頂タッチ中のピンク→オレンジ呼吸灯
 //  Sleep    : 寝顔時の呼吸灯 (青〜シアン, 4秒周期)
 //  PraiseEnd: 褒め反応の終了フェード (500ms)
 //  AmbientIdle: 3分放置後のランダム色アンビエント (20秒)
@@ -30,6 +31,7 @@ enum class RgbScene {
     AmbientIdle,  // 放置中の低頻度アンビエント演出
     Swipe,        // スワイプ撫での反応
     Praise,       // 褒められた時のピンクパルス
+    Headpat,      // 頭頂タッチ / なでなで中の呼吸灯
     Sleep,        // 寝顔時の呼吸灯
     PraiseEnd,    // 褒め反応の終了フェード
 };
@@ -64,6 +66,12 @@ public:
         scene_ms_ = millis();
     }
 
+    // Idle での「触れた瞬間」プレビューだけを解除する。
+    // Swipe / Shaken など別の反応シーンは上書きしない。
+    void endHeadpatPreview() {
+        if (scene_ == RgbScene::Headpat) setScene(RgbScene::Idle);
+    }
+
     void onState(State s) {
         switch (s) {
             case State::Idle:      setScene(RgbScene::Idle);      break;
@@ -71,6 +79,7 @@ public:
             case State::Listening: setScene(RgbScene::Listening); break;
             case State::Thinking:  setScene(RgbScene::Thinking);  break;
             case State::Speaking:  setScene(RgbScene::Speaking);  break;
+            case State::Headpat:   setScene(RgbScene::Headpat);   break;
             case State::Sleep:     setScene(RgbScene::Sleep);     break;
             case State::Error:     setScene(RgbScene::Error);     break;
             default: break;
@@ -108,6 +117,7 @@ public:
             case RgbScene::AmbientIdle: animAmbientIdle(dt); break;
             case RgbScene::Swipe:       animSwipe(dt);       break;
             case RgbScene::Praise:      animPraise(dt);      break;
+            case RgbScene::Headpat:     animHeadpat(dt);     break;
             case RgbScene::Sleep:       animSleep(dt);       break;
             case RgbScene::PraiseEnd:   animPraiseEnd(dt);   break;
             case RgbScene::Off:
@@ -358,6 +368,20 @@ private:
         }
         uint8_t v = (uint8_t)(ratio * 180.0f);
         fill_solid(leds_, RGB_NUM_LEDS, CHSV(h, 160, v));
+    }
+
+    void animHeadpat(uint32_t dt) {
+        // 触れた直後から確実に見えるよう、消え切らない呼吸灯にする。
+        const float t = (float)(dt % 1800) / 1800.0f;
+        const float pulse = 0.72f + 0.28f * sinf(t * 2.0f * (float)M_PI);
+        CRGB color;
+        if (dt < 1500) {
+            color = CRGB(255, 85, 145);   // はにかみ: ピンク
+        } else {
+            color = CRGB(255, 125, 35);   // とろけ笑い: 暖オレンジ
+        }
+        color.nscale8_video((uint8_t)(pulse * 255.0f));
+        fill_solid(leds_, RGB_NUM_LEDS, color);
     }
 
     void animPraiseEnd(uint32_t dt) {
