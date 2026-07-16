@@ -14,8 +14,8 @@ namespace stackchan {
 
 class TouchHandler {
 public:
-    static constexpr uint32_t SWIPE_WINDOW_MS = 600;   // スワイプ判定ウィンドウ
-    static constexpr uint32_t HOLD_MS         = 800;   // なでなで判定閾値 (> SWIPE_WINDOW)
+    static constexpr uint32_t SWIPE_WINDOW_MS = 350;   // スワイプ判定ウィンドウ
+    static constexpr uint32_t HOLD_MS         = 450;   // なでなで判定閾値 (> SWIPE_WINDOW)
     static constexpr uint32_t COOL_MS         = 2500;  // 反応後のクールダウン
     static constexpr uint8_t  SI12T_ADDR      = 0x68;
     static constexpr uint8_t  REG_STATUS      = 0x00;

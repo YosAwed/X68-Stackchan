@@ -131,6 +131,41 @@ KOKORO_SPEED=1.00
 ipconfig getifaddr en0   # 例: 192.168.1.42
 ```
 
+### 1-6. 必要な時だけ手動で起動する
+
+VOICEVOX Engine と母艦 FastAPI サーバは、管理スクリプトでまとめて起動・停止できる。
+母艦は VOICEVOX の HTTP 応答を待ってから起動する。
+
+```bash
+# 起動
+scripts/mac_stackchan_services.sh start
+# このターミナルを開いたままにする。Ctrl-C で両方停止。
+
+# プロセスと HTTP readiness を確認
+scripts/mac_stackchan_services.sh status
+
+# ログを追う
+scripts/mac_stackchan_services.sh logs
+
+# 停止
+# 別ターミナルから止めたい場合に使用
+scripts/mac_stackchan_services.sh stop
+```
+
+自動起動の登録は行わない。ログは `~/Library/Logs/X68-Stackchan/` に保存される。
+
+外出先でデモする場合は、次の順で準備する。
+
+1. Mac を起動する
+2. iPhone のインターネット共有を有効にする
+3. Mac と Stackchan を同じインターネット共有へ接続する
+4. Finder で `scripts/Start-Stackchan.command` をダブルクリックする
+5. `Demo network`、`Ollama`、`VOICEVOX`、`Stackchan server` がすべて
+   `ready` になったらデモを開始する
+
+終了時は、開いたターミナルで `Ctrl-C` を押す。スクリプトはFWの `SERVER_HOST`
+とMacのIPが一致しない場合、母艦を起動せず接続手順を表示する。
+
 ## 2. CoreS3 側のセットアップ
 
 [setup.md のセクション 2](setup.md#2-cores3-側のセットアップ) と完全に同じ手順。`SERVER_HOST` を Mac mini の IP に向けるだけ。

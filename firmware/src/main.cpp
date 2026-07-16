@@ -1029,7 +1029,12 @@ void loop() {
 
     switch (g_state) {
         case State::Idle: {
-            if (!pressed && !g_remote.btnA()) {
+            // Sleep / auto actions can return here while the head sensor is
+            // still held.  Do not clear the release gate until every input,
+            // including Si12T, has actually been released; otherwise the same
+            // headpat immediately starts again and creates a sleep/wake loop.
+            if (!pressed && !g_remote.btnA() &&
+                !M5StackChan.TouchSensor.isPressed()) {
                 g_wait_release_after_auto_send = false;
             }
 
@@ -1056,22 +1061,29 @@ void loop() {
                 if (M5StackChan.TouchSensor.isPressed()) {
                     if (g_headpat_idle_press_ms == 0) {
                         g_headpat_idle_press_ms = now;
+                        // Give immediate visual feedback while the gesture is
+                        // still being classified as swipe or headpat.
+                        g_face.show(faces::F_BASHFUL);
 #if RGB_ENABLED
-                        // 撫で判定 (800ms) を待たず、触れた瞬間から点灯する。
+                        // 撫で判定を待たず、触れた瞬間から点灯する。
                         g_rgb.setScene(RgbScene::Headpat);
 #endif
-                    } else if (now - g_headpat_idle_press_ms >= 800 &&
+                    } else if (now - g_headpat_idle_press_ms >= TouchHandler::HOLD_MS &&
                                now - g_headpat_idle_cool_ms >= 2500) {
                         headpat_fallback = true;
                         g_headpat_idle_cool_ms = now;
                     }
                 } else {
+                    const bool preview_was_visible = g_headpat_idle_press_ms != 0;
                     g_headpat_idle_press_ms = 0;
 #if RGB_ENABLED
                     if (touch_ev == TouchHandler::Event::None) {
                         g_rgb.endHeadpatPreview();
                     }
 #endif
+                    if (preview_was_visible && touch_ev == TouchHandler::Event::None) {
+                        g_face.show(faces::FACE_IDLE);
+                    }
                 }
                 if (touch_ev == TouchHandler::Event::Swipe) {
                     // スワイプ: 喜び表情 + 首振り + 黄色 LED バースト
@@ -1089,7 +1101,7 @@ void loop() {
                     // ホールド: headpat 開始 (はにかみ → とろけ → 眠り)
                     g_reaction_active = false;
                     playHeadpatChime();
-                    // タッチ検出の瞬間を基準にし、判定待ちの 800ms も
+                    // タッチ検出の瞬間を基準にし、判定待ち時間も
                     // 撫で時間に含める。
                     g_headpat_start_ms = g_headpat_idle_press_ms != 0
                                              ? g_headpat_idle_press_ms
@@ -1563,7 +1575,10 @@ void loop() {
             } else {
                 g_sleep_remote_wake_start_ms = 0;
             }
-            if (sleep_old_enough && head_pressed) {
+            // A headpat enters Sleep while Si12T is still pressed.  Require a
+            // real release after entering Sleep before a new head hold can be
+            // interpreted as an intentional wake gesture.
+            if (sleep_old_enough && g_sleep_head_released && head_pressed) {
                 if (g_sleep_head_wake_start_ms == 0) g_sleep_head_wake_start_ms = now;
             } else if (!head_pressed) {
                 g_sleep_head_wake_start_ms = 0;
@@ -1576,6 +1591,7 @@ void loop() {
                 g_sleep_remote_wake_start_ms != 0 &&
                 now - g_sleep_remote_wake_start_ms >= SLEEP_REMOTE_WAKE_HOLD_MS;
             const bool head_wake =
+                g_sleep_head_released &&
                 g_sleep_head_wake_start_ms != 0 &&
                 now - g_sleep_head_wake_start_ms >= SLEEP_HEAD_WAKE_HOLD_MS;
 
