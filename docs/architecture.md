@@ -14,7 +14,7 @@ sequenceDiagram
     U->>D: ボタン押下 (push-to-talk 開始)
     D->>D: 内蔵 PDM マイクで録音<br/>(16kHz, 16bit, mono)<br/>Avatar = Listening
     U->>D: ボタン離す
-    D->>S: POST /chat<br/>multipart: audio.wav
+    D->>S: USB CDC (優先) または POST /chat<br/>audio.wav
     D->>D: Avatar = Thinking
     S->>W: WAV → テキスト
     W-->>S: ユーザー発話 (str)

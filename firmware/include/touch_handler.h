@@ -23,6 +23,14 @@ public:
     enum class Zone  : uint8_t { None=0, Left, Center, Right };
     enum class Event : uint8_t { None=0, Pet, Swipe };
 
+    // MIDI playbackなど、入力を一時的に無視する区間へ入る時に
+    // 途中までのジェスチャーを破棄する。クールダウン時刻は維持する。
+    void cancelGesture() {
+        state_      = S::Idle;
+        first_zone_ = Zone::None;
+        first_ms_   = 0;
+    }
+
     // None/Pet/Swipe を返す。Swipe はスワイプ、Pet はなでなで検出。
     Event update(const std::array<uint8_t, 3>& intensities) {
         const uint32_t now  = millis();

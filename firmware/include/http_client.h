@@ -13,10 +13,12 @@
 #pragma once
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <WiFi.h>
 #include <cstdlib>
 #include <cstring>
 #include "config.h"
+#include "usb_transport.h"
 #include "wifi_manager.h"
 
 namespace stackchan {
@@ -77,6 +79,24 @@ public:
         return WiFiManager::isConnected();
     }
 
+    // USB is preferred whenever the local bridge is present. Wi-Fi is kept as
+    // a transparent fallback for the existing LAN deployment.
+    static bool usbReady() { return UsbTransport::isConnected(); }
+    static bool waitForUsb(uint32_t timeout_ms = 1500) {
+        return UsbTransport::waitForConnection(timeout_ms);
+    }
+    static bool ensureConnected() {
+        if (UsbTransport::isConnected()) return true;
+        return WiFiManager::ensureConnected();
+    }
+    static bool transportReady() {
+        return UsbTransport::isConnected() || WiFiManager::isConnected();
+    }
+    static const char* transportName() {
+        return UsbTransport::isConnected() ? "usb" :
+               (WiFiManager::isConnected() ? "wifi" : "none");
+    }
+
     // 1 回リトライする簡易 connect（瞬断に少し強くなる）。
     // ランタイムは WiFiManager::ensureConnected() が先に呼ばれる前提。
     static bool connectWithRetry(WiFiClient& c, const char* host, uint16_t port, uint32_t extra_delay_ms = 150) {
@@ -86,6 +106,7 @@ public:
     }
 
     static ReadyResponse ready() {
+        if (UsbTransport::isConnected()) return readyUsb();
         ReadyResponse r;
         if (!wifiReady()) {
             log_e("ready skipped: WiFi not connected");
@@ -161,6 +182,13 @@ public:
 
     // 録音 WAV をサーバに送って、応答 WAV を返す
     static ChatResponse send(const uint8_t* wav, size_t wav_size) {
+        if (UsbTransport::isConnected()) {
+            JsonDocument request_meta;
+            request_meta["sid"] = SESSION_ID;
+            String encoded;
+            serializeJson(request_meta, encoded);
+            return chatUsb(UsbOperation::Chat, encoded, wav, wav_size, HTTP_TIMEOUT_MS);
+        }
         ChatResponse r;
         if (!wifiReady()) {
             log_e("chat skipped: WiFi not connected");
@@ -294,6 +322,7 @@ public:
     // 短い待ち受け WAV を /wake に投げ、ウェイクワード検出だけ行う。
     // 200 = 検出、204 = 未検出。LLM/TTS は走らない。
     static WakeResponse wake(const uint8_t* wav, size_t wav_size) {
+        if (UsbTransport::isConnected()) return wakeUsb(wav, wav_size);
         WakeResponse r;
         if (!wifiReady()) {
             log_e("wake skipped: WiFi not connected");
@@ -374,6 +403,10 @@ public:
 
     // 母艦の内蔵カメラで静止画を 1 枚撮り、vision LLM + TTS の応答 WAV を返す
     static ChatResponse captureVision() {
+        if (UsbTransport::isConnected()) {
+            return chatUsb(UsbOperation::VisionCapture, "{}", nullptr, 0,
+                           HTTP_TIMEOUT_MS);
+        }
         ChatResponse r;
         if (!wifiReady()) {
             log_e("vision skipped: WiFi not connected");
@@ -469,6 +502,14 @@ public:
 
     // 任意テキストを /speak に投げて、合成済み WAV を返す。
     static ChatResponse speakText(const String& text) {
+        if (UsbTransport::isConnected()) {
+            JsonDocument request_meta;
+            request_meta["text"] = text;
+            String encoded;
+            serializeJson(request_meta, encoded);
+            return chatUsb(UsbOperation::Speak, encoded, nullptr, 0,
+                           HTTP_TIMEOUT_MS);
+        }
         ChatResponse r;
         if (!wifiReady()) {
             log_e("speak skipped: WiFi not connected");
@@ -567,6 +608,7 @@ public:
     // wait_seconds=0 なら即時応答 (空なら 204)。> 0 で server 側 long-poll。
     // CoreS3 側は待機ループ中に呼ぶので、wait_seconds=0 の短ポーリングが基本。
     static PullResponse pull(uint32_t wait_seconds = 0) {
+        if (UsbTransport::isConnected()) return pullUsb(wait_seconds);
         PullResponse r;
         if (!wifiReady()) {
             log_e("pull skipped: WiFi not connected");
@@ -646,6 +688,109 @@ public:
     }
 
 private:
+    static ReadyResponse readyUsb() {
+        ReadyResponse r;
+        UsbResponse ur;
+        if (!UsbTransport::request(UsbOperation::Ready, "{}", nullptr, 0, ur, 7000)) {
+            return r;
+        }
+        r.http_status = ur.status;
+        if (ur.body && ur.body_size) {
+            r.body.reserve(ur.body_size);
+            for (size_t i = 0; i < ur.body_size; ++i) r.body += static_cast<char>(ur.body[i]);
+        }
+        r.ok = (r.http_status == 200) &&
+               (r.body.indexOf("\"ok\":true") >= 0 ||
+                r.body.indexOf("\"ok\": true") >= 0);
+        ur.clear();
+        Serial.printf("[USB ] /ready status=%d ok=%d\n", r.http_status, r.ok ? 1 : 0);
+        return r;
+    }
+
+    static void parseChatMetadata(const String& encoded, ChatResponse& r) {
+        JsonDocument doc;
+        if (deserializeJson(doc, encoded)) return;
+        r.user_text = String(doc["user_text"] | "");
+        r.bot_text = String(doc["bot_text"] | "");
+        r.timing = String(doc["timing"] | "");
+        r.tts_backend = String(doc["tts_backend"] | "");
+        r.emote = String(doc["emote"] | "");
+    }
+
+    static ChatResponse chatUsb(UsbOperation operation,
+                                const String& metadata,
+                                const uint8_t* body,
+                                size_t body_size,
+                                uint32_t timeout_ms) {
+        ChatResponse r;
+        UsbResponse ur;
+        if (!UsbTransport::request(operation, metadata, body, body_size, ur, timeout_ms)) {
+            return r;
+        }
+        r.http_status = ur.status;
+        parseChatMetadata(ur.metadata, r);
+        if (r.http_status == 200 && ur.body && ur.body_size) {
+            r.body = ur.body;
+            r.body_size = ur.body_size;
+            r.ok = true;
+            ur.body = nullptr;
+            ur.body_size = 0;
+        }
+        ur.clear();
+        Serial.printf("[USB ] operation=%u status=%d body=%u bot='%s'\n",
+                      static_cast<unsigned>(operation), r.http_status,
+                      static_cast<unsigned>(r.body_size), r.bot_text.c_str());
+        return r;
+    }
+
+    static WakeResponse wakeUsb(const uint8_t* wav, size_t wav_size) {
+        WakeResponse r;
+        UsbResponse ur;
+        if (!UsbTransport::request(UsbOperation::Wake, "{}", wav, wav_size, ur,
+                                   HTTP_TIMEOUT_MS)) {
+            return r;
+        }
+        r.http_status = ur.status;
+        JsonDocument doc;
+        if (!deserializeJson(doc, ur.metadata)) {
+            r.user_text = String(doc["user_text"] | "");
+            r.timing = String(doc["timing"] | "");
+        }
+        r.ok = (r.http_status == 200 || r.http_status == 204);
+        r.detected = (r.http_status == 200);
+        ur.clear();
+        return r;
+    }
+
+    static PullResponse pullUsb(uint32_t wait_seconds) {
+        PullResponse r;
+        JsonDocument request_meta;
+        request_meta["wait"] = wait_seconds;
+        String encoded;
+        serializeJson(request_meta, encoded);
+        UsbResponse ur;
+        if (!UsbTransport::request(UsbOperation::Pull, encoded, nullptr, 0, ur,
+                                   (wait_seconds + 5) * 1000)) {
+            return r;
+        }
+        r.http_status = ur.status;
+        JsonDocument doc;
+        if (!deserializeJson(doc, ur.metadata)) {
+            r.bot_text = String(doc["bot_text"] | "");
+            r.source = String(doc["source"] | "");
+            r.emote = String(doc["emote"] | "");
+        }
+        if (r.http_status == 200 && ur.body && ur.body_size) {
+            r.body = ur.body;
+            r.body_size = ur.body_size;
+            r.ok = true;
+            ur.body = nullptr;
+            ur.body_size = 0;
+        }
+        ur.clear();
+        return r;
+    }
+
     static int hexValue(char c) {
         if (c >= '0' && c <= '9') return c - '0';
         if (c >= 'a' && c <= 'f') return c - 'a' + 10;

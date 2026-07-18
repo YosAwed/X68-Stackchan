@@ -14,7 +14,7 @@
   - StackChan 基板経由で UART (GPIO6/7, 1 Mbps) に接続。SG90 PWM サーボ用ではない
   - サーボを使わない場合は `config.h` の `SERVO_ENABLED` を `0` にする
 - Mac mini (Apple Silicon 推奨)
-- 同一 Wi-Fi LAN (CoreS3 から Mac mini に IP で届くこと)
+- データ通信対応 USB-C ケーブル (推奨)。Wi-Fi運用時だけ同一LANが必要
 
 ## 1. Mac mini 側のセットアップ
 
@@ -154,21 +154,20 @@ scripts/mac_stackchan_services.sh stop
 
 自動起動の登録は行わない。ログは `~/Library/Logs/X68-Stackchan/` に保存される。
 
-外出先でデモする場合は、次の順で準備する。
+外出先ではUSB接続を使えば、インターネット共有もSSID変更も不要。
 
 1. Mac を起動する
-2. iPhone のインターネット共有を有効にする
-3. Mac と Stackchan を同じインターネット共有へ接続する
-4. Finder で `scripts/Start-Stackchan.command` をダブルクリックする
-5. `Demo network`、`Ollama`、`VOICEVOX`、`Stackchan server` がすべて
-   `ready` になったらデモを開始する
+2. CoreS3をデータ通信対応USB-CケーブルでMacへ接続する
+3. Finder で `scripts/Start-Stackchan.command` をダブルクリックする
+4. `USB transport`、`Ollama`、`VOICEVOX`、`Stackchan server`、`USB bridge`
+   が起動したらデモを開始する
 
-終了時は、開いたターミナルで `Ctrl-C` を押す。スクリプトはFWの `SERVER_HOST`
-とMacのIPが一致しない場合、母艦を起動せず接続手順を表示する。
+終了時は、開いたターミナルで `Ctrl-C` を押す。USBが見つからない場合だけ、
+スクリプトは従来どおりFWの `SERVER_HOST` とMacのIPを検査してWi-Fi運用へ戻る。
 
 ## 2. CoreS3 側のセットアップ
 
-[setup.md のセクション 2](setup.md#2-cores3-側のセットアップ) と完全に同じ手順。`SERVER_HOST` を Mac mini の IP に向けるだけ。
+[setup.md のセクション 2](setup.md#2-cores3-側のセットアップ) と同じ手順。USB運用では `SERVER_HOST` とSSIDは使用しない。Wi-Fiフォールバックも使う場合だけMac miniのLAN IPを設定する。
 
 ### 2-1. Mac から USB 直結で焼く場合
 

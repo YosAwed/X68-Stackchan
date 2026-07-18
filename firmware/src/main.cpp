@@ -229,8 +229,7 @@ static inline void updateIdleMicro() {
 }
 
 // ---- Idle 定期診断ステータス（シリアルログ強化） ----
-// 15 秒おきに WiFi 状態・ヒープ使用量・稼働時間を出す。
-// これにより WiFi 回復の成否やメモリ圧迫をデバッグしやすくなる。
+// 15 秒おきに transport 状態・ヒープ使用量・稼働時間を出す。
 static inline void updateIdleStatus() {
     const uint32_t now = millis();
     if (now - g_last_status_ms < STATUS_INTERVAL_MS) return;
@@ -240,7 +239,8 @@ static inline void updateIdleStatus() {
     const uint32_t free_heap  = ESP.getFreeHeap();
     const uint32_t free_psram = ESP.getFreePsram();
 
-    Serial.printf("[STATUS] wifi=%d heap=%u psram=%u uptime=%lus\n",
+    Serial.printf("[STATUS] transport=%s wifi=%d heap=%u psram=%u uptime=%lus\n",
+                  ChatClient::transportName(),
                   wifi_ok ? 1 : 0,
                   (unsigned)free_heap,
                   (unsigned)free_psram,
@@ -789,8 +789,8 @@ static void playSleepMurmurIfDue() {
     Serial.println("[SLEEP] murmur skipped (offline)");
     return;
 #else
-    if (!WiFiManager::ensureConnected()) {
-        Serial.println("[SLEEP] murmur skipped (WiFi not connected)");
+    if (!ChatClient::ensureConnected()) {
+        Serial.println("[SLEEP] murmur skipped (host not connected)");
         return;
     }
 
@@ -904,6 +904,11 @@ void setup() {
     // M5Unified 配下の I2C バスをそのまま借りるので順序的に M5.begin() の後で。
     M5StackChan.begin();
     Serial.begin(115200);
+    // HW USB-CDC defaults to a 256-byte RX queue. Host responses (especially
+    // WAV audio) arrive in larger bursts, so keep enough headroom while the
+    // application drains the stream incrementally.
+    Serial.setRxBufferSize(16 * 1024);
+    Serial.setTxBufferSize(4 * 1024);
 
     // (1) Human68k 風スプラッシュ + 起動チャイム (画面と音は同時進行)
     playBootChime();
@@ -941,13 +946,21 @@ void setup() {
         return;
     }
     g_pwr.begin();
-    // WiFi / /ready の失敗時も setup を最後まで通し、State::Error に落として
+    // USB/WiFi / /ready の失敗時も setup を最後まで通し、State::Error に落として
     // loop 側で定期リトライする (以前は return して永久に復帰しなかった)。
     bool server_ok = true;
 #if defined(OFFLINE_MODE) && OFFLINE_MODE
     Serial.println("[OFFLINE] skipping WiFi & server ready check (kawaii test mode)");
 #else
-    if (!WiFiManager::connectBlocking()) {
+    bool transport_ok = ChatClient::waitForUsb(1500);
+    if (transport_ok) {
+        Serial.println("[USB ] using wired host transport (WiFi not required)");
+        // ESP-NOW remote needs the radio initialized, but not an access point.
+        WiFiManager::initSta();
+    } else {
+        transport_ok = WiFiManager::connectBlocking();
+    }
+    if (!transport_ok) {
         g_face.show(faces::FACE_ERR_WIFI);
         server_ok = false;
     } else {
@@ -987,11 +1000,11 @@ void setup() {
 
 void loop() {
     M5.update();
-    M5StackChan.update();   // 頭頂タッチセンサー (Si12T) のポーリング
+    UsbTransport::poll();
 #if MIDI_SAM2695_ENABLED
     g_midi.update();
-    while (Serial.available()) {
-        const char c = (char)Serial.read();
+    while (UsbTransport::commandAvailable()) {
+        const char c = UsbTransport::readCommand();
         if (c == 'm' || c == 'M') {
             toggleMidiPlayback("serial");
         } else if (c == '+') {
@@ -1000,6 +1013,13 @@ void loop() {
             adjustMidiVolume(-10);
         }
     }
+    // SAM2695へのイベント送信中はSi12TのI2Cポーリングも止める。
+    // 長時間演奏時のI2C飽和を避け、自然終了した同じloopから自動復帰する。
+    if (!g_midi.isPlaying()) {
+        M5StackChan.TouchSensor.update();
+    }
+#else
+    M5StackChan.TouchSensor.update();
 #endif
 
     // CoreS3 SE は物理ボタンが無く、M5Unified の virtual button マッピングも
@@ -1054,6 +1074,18 @@ void loop() {
             // 頭頂タッチ: スワイプ優先、ホールドでなでなで (headpat)
             // wasPressed() は即発火するためスワイプ判定と競合する。
             // g_touch.update() に一本化して Swipe/Pet を区別する。
+            // MIDIストリーミング中はタッチ反応を完全に止め、UARTイベントの
+            // 遅延・終了後の一括送信を防ぐ。曲が終わると次のloopから自動復帰。
+            if (midi_playing) {
+                g_touch.cancelGesture();
+                if (g_headpat_idle_press_ms != 0) {
+                    g_headpat_idle_press_ms = 0;
+                    g_face.show(faces::FACE_IDLE);
+#if RGB_ENABLED
+                    g_rgb.endHeadpatPreview();
+#endif
+                }
+            }
             if (!midi_playing && !g_wait_release_after_auto_send) {
                 const uint32_t now = millis();
                 const auto touch_ev = g_touch.update(M5StackChan.TouchSensor.getIntensities());
@@ -1194,8 +1226,8 @@ void loop() {
                 delay(800);
                 playAckBeep();
 #else
-                if (!WiFiManager::ensureConnected()) {
-                    Serial.println("[ERR ] WiFi not connected (vision skipped)");
+                if (!ChatClient::ensureConnected()) {
+                    Serial.println("[ERR ] host not connected (vision skipped)");
                     handleHttpError(0);
                 } else {
                     const uint32_t t_send_start = millis();
@@ -1259,7 +1291,7 @@ void loop() {
 #if MIDI_SAM2695_ENABLED
                 !g_midi.isPlaying() &&
 #endif
-                WiFiManager::ensureConnected()) {
+                ChatClient::ensureConnected()) {
                 Serial.println("[WAKE] listen start");
                 g_rec.start();
                 g_wake_listening_start_ms = millis();
@@ -1268,9 +1300,9 @@ void loop() {
             }
 #endif
 #if !defined(OFFLINE_MODE) || !OFFLINE_MODE
-            // 待機中: Wi-Fi 回復後だけ /pull を叩く (未接続時の TCP は assert 原因)。
-            if (!midi_playing && WiFiManager::ensureConnected()) {
-                if (WiFiManager::consumeReconnectEvent()) {
+            // 待機中: USB または Wi-Fi が利用可能な時だけ /pull を叩く。
+            if (!midi_playing && ChatClient::ensureConnected()) {
+                if (WiFiManager::isConnected() && WiFiManager::consumeReconnectEvent()) {
                     g_last_status_ms = millis() - STATUS_INTERVAL_MS - 1;
                 }
                 if (millis() - g_last_pull_ms >= PULL_INTERVAL_MS) {
@@ -1326,7 +1358,7 @@ void loop() {
 #if defined(OFFLINE_MODE) && OFFLINE_MODE
                 Serial.printf("[OFFLINE] wake sample %u bytes (skip /wake)\n", (unsigned)n);
 #else
-                if (WiFiManager::ensureConnected()) {
+                if (ChatClient::ensureConnected()) {
                     WakeResponse wr = ChatClient::wake(g_rec.data(), n);
                     if (wr.timing.length() > 0) {
                         Serial.printf("[TIME] %s\n", wr.timing.c_str());
@@ -1338,7 +1370,7 @@ void loop() {
                                       detected ? 1 : 0);
                     }
                 } else {
-                    Serial.println("[WAKE] skipped (WiFi not connected)");
+                    Serial.println("[WAKE] skipped (host not connected)");
                 }
 #endif
                 if (detected) {
@@ -1446,8 +1478,8 @@ void loop() {
                 g_face.show(faces::F_SOFT_SMILE);
                 delay(600);
 #else
-                if (!WiFiManager::ensureConnected()) {
-                    Serial.println("[ERR ] WiFi not connected (/chat skipped)");
+                if (!ChatClient::ensureConnected()) {
+                    Serial.println("[ERR ] host not connected (/chat skipped)");
                     handleHttpError(0);
                 } else {
                     ChatResponse r = ChatClient::send(g_rec.data(), n);
@@ -1618,11 +1650,12 @@ void loop() {
             const uint32_t now = millis();
             if ((int32_t)(now - g_error_retry_ms) < 0) break;
             g_error_retry_ms = now + ERROR_RETRY_INTERVAL_MS;
-            if (!WiFiManager::ensureConnected()) {
-                Serial.println("[RETRY] WiFi still not connected");
+            if (!ChatClient::ensureConnected()) {
+                Serial.println("[RETRY] host still not connected");
                 break;
             }
             if (!g_remote_begun) {
+                WiFiManager::initSta();
                 g_remote.begin();
                 g_remote_begun = true;
             }

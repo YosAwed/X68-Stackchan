@@ -64,6 +64,7 @@ public:
         if (scene_ == s) return;
         scene_   = s;
         scene_ms_ = millis();
+        last_update_ms_ = 0;  // シーン切替は次のupdateで即時反映
     }
 
     // Idle での「触れた瞬間」プレビューだけを解除する。
@@ -105,7 +106,12 @@ public:
 
     // loop() / lipsync ループから毎回呼ぶ
     void update() {
-        const uint32_t dt = millis() - scene_ms_;
+        const uint32_t now = millis();
+        // PY32へのRGB書込みはI2Cを使う。約200fpsで書き続けるとSi12Tの
+        // 読取りと競合するため、人の目には十分滑らかな40fpsへ制限する。
+        if (last_update_ms_ != 0 && now - last_update_ms_ < 25) return;
+        last_update_ms_ = now;
+        const uint32_t dt = now - scene_ms_;
         switch (scene_) {
             case RgbScene::Idle:      animIdle(dt);      break;
             case RgbScene::Listening: animListening(dt); break;
@@ -130,6 +136,8 @@ public:
 private:
     static constexpr uint8_t PY32_ADDR = 0x6F;
     static constexpr uint32_t PY32_I2C_FREQ = 100000;
+    static constexpr uint8_t PY32_FAILURE_LIMIT = 3;
+    static constexpr uint32_t PY32_RECOVERY_INTERVAL_MS = 1000;
     static constexpr uint8_t REG_GPIO_M_L = 0x03;
     static constexpr uint8_t REG_GPIO_M_H = 0x04;
     static constexpr uint8_t REG_GPIO_PU_L = 0x09;
@@ -144,10 +152,13 @@ private:
     CRGB     leds_[RGB_NUM_LEDS];
     RgbScene scene_      = RgbScene::Off;
     uint32_t scene_ms_   = 0;
+    uint32_t last_update_ms_ = 0;
     float    speak_rms_  = 0.0f;
     char     speak_emote_[16] = {0};  // 発話中の emote タグ
     uint8_t  ambient_hue_ = 80;  // 現在のアンビエント色相 (非赤系, 30-199)
     bool     py32_ready_  = false;
+    uint8_t  py32_failure_count_ = 0;
+    uint32_t py32_last_recovery_ms_ = 0;
     uint32_t micro_flash_ms_ = 0;     // マイクロ表情フラッシュ開始時刻
     bool     micro_flash_active_ = false;  // フラッシュ中フラグ
 
@@ -156,38 +167,61 @@ private:
 
     // ---- アニメーション ----------------------------------------
 
-    bool beginPy32() {
-        const uint32_t start = millis();
-        while (millis() - start < 1200) {
-            if (M5.In_I2C.scanID(PY32_ADDR, PY32_I2C_FREQ)) {
-                py32_ready_ = true;
-                break;
-            }
-            delay(100);
-        }
-        if (!py32_ready_) return false;
+    bool configurePy32() {
+        if (!M5.In_I2C.scanID(PY32_ADDR, PY32_I2C_FREQ)) return false;
 
+        uint8_t version = 0;
+        if (!M5.In_I2C.readRegister(
+                PY32_ADDR, 0x02, &version, 1, PY32_I2C_FREQ) ||
+            version == 0 || version == 0xFF) {
+            return false;
+        }
         // 公式StackChanと同じく、PY32 pin 13をRGB出力用に設定する。
-        writeBit(REG_GPIO_M_L, REG_GPIO_M_H, 13, true);
-        writeBit(REG_GPIO_PU_L, REG_GPIO_PU_H, 13, true);
-        writeBit(REG_GPIO_PD_L, REG_GPIO_PD_H, 13, false);
-        writeBit(REG_GPIO_DRV_L, REG_GPIO_DRV_H, 13, false);
-        M5.In_I2C.writeRegister8(PY32_ADDR, REG_LED_CFG, RGB_NUM_LEDS & 0x3F, PY32_I2C_FREQ);
+        if (!writeBit(REG_GPIO_M_L, REG_GPIO_M_H, 13, true) ||
+            !writeBit(REG_GPIO_PU_L, REG_GPIO_PU_H, 13, true) ||
+            !writeBit(REG_GPIO_PD_L, REG_GPIO_PD_H, 13, false) ||
+            !writeBit(REG_GPIO_DRV_L, REG_GPIO_DRV_H, 13, false) ||
+            !M5.In_I2C.writeRegister8(
+                PY32_ADDR, REG_LED_CFG, RGB_NUM_LEDS & 0x3F, PY32_I2C_FREQ)) {
+            return false;
+        }
+        py32_ready_ = true;
+        py32_failure_count_ = 0;
         delay(50);
         return true;
     }
 
-    void writeBit(uint8_t reg_l, uint8_t reg_h, uint8_t pin, bool value) {
+    bool beginPy32() {
+        const uint32_t start = millis();
+        while (millis() - start < 1200) {
+            if (configurePy32()) return true;
+            delay(100);
+        }
+        return false;
+    }
+
+    bool writeBit(uint8_t reg_l, uint8_t reg_h, uint8_t pin, bool value) {
         const uint8_t reg = pin < 8 ? reg_l : reg_h;
         const uint8_t bit = pin < 8 ? pin : pin - 8;
-        uint8_t current = M5.In_I2C.readRegister8(PY32_ADDR, reg, PY32_I2C_FREQ);
+        uint8_t current = 0;
+        if (!M5.In_I2C.readRegister(
+                PY32_ADDR, reg, &current, 1, PY32_I2C_FREQ)) {
+            return false;
+        }
         if (value) current |= (1 << bit);
         else current &= ~(1 << bit);
-        M5.In_I2C.writeRegister8(PY32_ADDR, reg, current, PY32_I2C_FREQ);
+        return M5.In_I2C.writeRegister8(
+            PY32_ADDR, reg, current, PY32_I2C_FREQ);
     }
 
     void show() {
-        if (!py32_ready_) return;
+        if (!py32_ready_) {
+            const uint32_t now = millis();
+            if (now - py32_last_recovery_ms_ < PY32_RECOVERY_INTERVAL_MS) return;
+            py32_last_recovery_ms_ = now;
+            if (!configurePy32()) return;
+            Serial.println("[RGB ] PY32 recovered");
+        }
         uint8_t data[RGB_NUM_LEDS * 2];
         for (int i = 0; i < RGB_NUM_LEDS; i++) {
             const uint8_t r = (uint16_t)leds_[i].r * MAX_BRIGHT / 255;
@@ -197,9 +231,27 @@ private:
             data[i * 2] = rgb565 & 0xFF;
             data[i * 2 + 1] = (rgb565 >> 8) & 0xFF;
         }
-        M5.In_I2C.writeRegister(PY32_ADDR, REG_LED_RAM_START, data, sizeof(data), PY32_I2C_FREQ);
-        const uint8_t cfg = M5.In_I2C.readRegister8(PY32_ADDR, REG_LED_CFG, PY32_I2C_FREQ);
-        M5.In_I2C.writeRegister8(PY32_ADDR, REG_LED_CFG, cfg | (1 << 6), PY32_I2C_FREQ);
+        // LED count is fixed, so the refresh bit can be written together with
+        // the count. This avoids an extra I2C read on every animation frame.
+        const bool ok =
+            M5.In_I2C.writeRegister(
+                PY32_ADDR, REG_LED_RAM_START, data, sizeof(data), PY32_I2C_FREQ) &&
+            M5.In_I2C.writeRegister8(
+                PY32_ADDR,
+                REG_LED_CFG,
+                (RGB_NUM_LEDS & 0x3F) | (1 << 6),
+                PY32_I2C_FREQ);
+        if (ok) {
+            py32_failure_count_ = 0;
+            return;
+        }
+
+        if (++py32_failure_count_ >= PY32_FAILURE_LIMIT) {
+            py32_ready_ = false;
+            py32_failure_count_ = 0;
+            py32_last_recovery_ms_ = millis();
+            Serial.println("[RGB ] I2C failed; retrying PY32");
+        }
     }
 
     void animIdle(uint32_t dt) {

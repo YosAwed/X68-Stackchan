@@ -6,12 +6,14 @@
 // ========================================================
 #pragma once
 
-// ---- Wi-Fi --------------------------------------------------
+// ---- Wi-Fi (USB中継が無い場合のフォールバック) -------------
+// USB CDCで母艦へ接続している間は、以下のSSID/PASSとSERVER_HOSTは使わない。
+// 一度USB対応ファームを焼けば、外出先ごとのWi-Fi設定・再書込みは不要。
 static constexpr const char* WIFI_SSID = "your-ssid";
 static constexpr const char* WIFI_PASS = "your-password";
 
 // ---- 母艦 (FastAPI サーバ) ---------------------------------
-// 母艦 PC / Mac の **LAN IP** を入れる。
+// Wi-Fiフォールバックで使う母艦 PC / Mac の **LAN IP** を入れる。
 //   ※ `localhost` / `127.0.0.1` は CoreS3 から見ると自分自身を指してしまうので不可。
 //   ※ Windows なら `ipconfig | findstr IPv4`、macOS なら `ipconfig getifaddr en0` で確認。
 //   ※ 母艦と CoreS3 は同じ Wi-Fi LAN に置くこと。

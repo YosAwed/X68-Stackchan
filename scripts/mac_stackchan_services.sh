@@ -2,16 +2,20 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SERVER_DIR="$ROOT_DIR/server"
 VOICEVOX_SCRIPT="$ROOT_DIR/scripts/start_voicevox_engine.sh"
 SERVER_SCRIPT="$ROOT_DIR/scripts/start_stackchan_server.sh"
+USB_BRIDGE_SCRIPT="$ROOT_DIR/server/usb_bridge.py"
 FIRMWARE_CONFIG="$ROOT_DIR/firmware/include/config.h"
 RUNTIME_DIR="/private/tmp/x68-stackchan-services-$(id -u)"
 LOG_DIR="${HOME:?HOME is not set}/Library/Logs/X68-Stackchan"
 MANAGER_PID_FILE="$RUNTIME_DIR/manager.pid"
 VOICEVOX_PID_FILE="$RUNTIME_DIR/voicevox.pid"
 SERVER_PID_FILE="$RUNTIME_DIR/server.pid"
+USB_BRIDGE_PID_FILE="$RUNTIME_DIR/usb-bridge.pid"
 VOICEVOX_LOG="$LOG_DIR/voicevox.log"
 SERVER_LOG="$LOG_DIR/server.log"
+USB_BRIDGE_LOG="$LOG_DIR/usb-bridge.log"
 
 usage() {
   cat <<'EOF'
@@ -57,7 +61,21 @@ expected_server_host() {
     "$FIRMWARE_CONFIG" | /usr/bin/head -n 1
 }
 
-check_demo_network() {
+has_usb_device() {
+  local pattern path
+  for pattern in /dev/cu.usbmodem\* /dev/cu.usbserial\* /dev/cu.SLAB_USBtoUART\* /dev/cu.wchusbserial\*; do
+    for path in $pattern; do
+      [[ -e "$path" ]] && return 0
+    done
+  done
+  return 1
+}
+
+check_transport() {
+  if has_usb_device; then
+    echo "USB transport: ready (Wi-Fi not required)"
+    return
+  fi
   local expected_host
   expected_host="$(expected_server_host)" || {
     echo "Cannot read SERVER_HOST from $FIRMWARE_CONFIG" >&2
@@ -132,6 +150,7 @@ stop_pid() {
 
 cleanup_children() {
   trap - EXIT INT TERM
+  stop_pid "USB bridge" "$USB_BRIDGE_PID_FILE" || true
   stop_pid "Stackchan server" "$SERVER_PID_FILE" || true
   stop_pid "VOICEVOX" "$VOICEVOX_PID_FILE" || true
   /bin/rm -f "$MANAGER_PID_FILE"
@@ -160,7 +179,7 @@ start_services() {
   printf '%s\n' "$$" >"$MANAGER_PID_FILE"
   trap cleanup_children EXIT INT TERM
 
-  check_demo_network
+  check_transport
   ensure_ollama
 
   "$VOICEVOX_SCRIPT" >>"$VOICEVOX_LOG" 2>&1 &
@@ -173,8 +192,15 @@ start_services() {
   echo "Stackchan server: starting (pid $!)"
   wait_for_http "Stackchan server" http://127.0.0.1:8000/ready 120
 
-  echo "Stackchan services are running. Press Ctrl-C to stop both."
-  while pid_is_running "$VOICEVOX_PID_FILE" && pid_is_running "$SERVER_PID_FILE"; do
+  "$SERVER_DIR/.venv/bin/python" "$USB_BRIDGE_SCRIPT" \
+    >>"$USB_BRIDGE_LOG" 2>&1 &
+  printf '%s\n' "$!" >"$USB_BRIDGE_PID_FILE"
+  echo "USB bridge: starting (pid $!)"
+
+  echo "Stackchan services are running. Press Ctrl-C to stop them."
+  while pid_is_running "$VOICEVOX_PID_FILE" && \
+        pid_is_running "$SERVER_PID_FILE" && \
+        pid_is_running "$USB_BRIDGE_PID_FILE"; do
     /bin/sleep 2
   done
   echo "A managed service exited unexpectedly" >&2
@@ -190,9 +216,21 @@ stop_services() {
     return
   fi
 
+  stop_pid "USB bridge" "$USB_BRIDGE_PID_FILE"
   stop_pid "Stackchan server" "$SERVER_PID_FILE"
   stop_pid "VOICEVOX" "$VOICEVOX_PID_FILE"
   /bin/rm -f "$MANAGER_PID_FILE"
+}
+
+wait_for_manager_stop() {
+  for _ in {1..40}; do
+    if ! pid_is_running "$MANAGER_PID_FILE"; then
+      return
+    fi
+    /bin/sleep 0.25
+  done
+  echo "Manager did not stop within 10 seconds" >&2
+  return 1
 }
 
 show_process_status() {
@@ -209,6 +247,7 @@ status_services() {
   show_process_status "Manager" "$MANAGER_PID_FILE"
   show_process_status "VOICEVOX" "$VOICEVOX_PID_FILE"
   show_process_status "Stackchan server" "$SERVER_PID_FILE"
+  show_process_status "USB bridge" "$USB_BRIDGE_PID_FILE"
 
   if http_ready http://127.0.0.1:50021/version; then
     echo "VOICEVOX HTTP: ready"
@@ -229,15 +268,15 @@ status_services() {
 
 follow_logs() {
   prepare_dirs
-  /usr/bin/touch "$VOICEVOX_LOG" "$SERVER_LOG"
-  /usr/bin/tail -n 50 -F "$VOICEVOX_LOG" "$SERVER_LOG"
+  /usr/bin/touch "$VOICEVOX_LOG" "$SERVER_LOG" "$USB_BRIDGE_LOG"
+  /usr/bin/tail -n 50 -F "$VOICEVOX_LOG" "$SERVER_LOG" "$USB_BRIDGE_LOG"
 }
 
 command="${1:-}"
 case "$command" in
   start)   start_services ;;
   stop)    stop_services ;;
-  restart) stop_services; start_services ;;
+  restart) stop_services; wait_for_manager_stop; start_services ;;
   status)  status_services ;;
   logs)    follow_logs ;;
   -h|--help|help) usage ;;

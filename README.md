@@ -3,7 +3,7 @@
 M5Stack 公式スタックちゃん (CoreS3 SE) を、X68000 擬人化キャラ **ぺけ子ちゃん** にしてしまうカスタムファーム。
 推論・音声認識・音声合成はすべて母艦 PC/Mac 上で走らせる、**完全ローカルの AI 会話エージェント**。クラウド API は使わない。
 
-> **CoreS3 単体では完結しません。** 録音・再生・表示・サーボ・頭頂タッチは CoreS3、STT (faster-whisper) / LLM (Ollama) / TTS (Irodori-TTS-Lite または VOICEVOX) は母艦 PC/Mac 上の FastAPI サーバが担当する分担構成です。Wi-Fi LAN 越しに `multipart/form-data` で繋がります。母艦が無くても **`OFFLINE_MODE=1` を入れれば** 起動チャイム・スプラッシュ・表情アニメ・頭撫で反応・LED 演出までは単体で動作確認できます。
+> **CoreS3 単体では完結しません。** 録音・再生・表示・サーボ・頭頂タッチは CoreS3、STT (faster-whisper) / LLM (Ollama) / TTS (Irodori-TTS-Lite または VOICEVOX) は母艦 PC/Mac 上の FastAPI サーバが担当します。CoreS3 と母艦は **USB CDC (優先、ネットワーク不要)** または Wi-Fi LAN (自動フォールバック) で接続します。母艦が無くても **`OFFLINE_MODE=1`** なら起動チャイム・表情・頭撫で反応・LED 演出までは単体で確認できます。
 
 ### どの手順を読むか
 
@@ -55,7 +55,7 @@ Sleep に入った後は、初回 45〜150 秒、その後 2〜6 分ごとのラ
 初めて触るときは下の順に確かめると詰まりにくい (詳細は [docs/setup.md §3](docs/setup.md#3-動作確認-段階的に切り分ける) に同じ内容で展開)。
 
 1. **(母艦無しでも OK)** `OFFLINE_MODE=1` で焼く → 起動チャイム・スプラッシュ・顔・まばたき・マイクロ表情・頭撫で反応まで確認
-2. **母艦サーバへの到達確認** — `OFFLINE_MODE=0` に戻して uvicorn を起こす。シリアルログに `WiFi connected` と `/pull` の応答が出ることを見る
+2. **母艦サーバへの到達確認** — `OFFLINE_MODE=0` に戻して母艦サービスを起動する。USB接続なら `[USB ] bridge connected`、Wi-Fiなら `WiFi connected` が出ることを見る
 3. **会話 (push-to-talk)** — 画面下をタッチ長押し → 録音 → STT → LLM → TTS が往復する
 4. **ウェイクワード** — `WAKE_WORD_ENABLED=1` にして「ぺけ子」「スタックちゃん」などと呼ぶ → ack beep 後に本録音へ入る
 
@@ -68,8 +68,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-irodori-
 ## 構成
 
 ```
-┌─────────────────────────────┐         Wi-Fi (HTTP)          ┌────────────────────────────┐
-│  M5Stack CoreS3 SE          │  ──── multipart/form-data ─► │  母艦 PC / Mac              │
+┌─────────────────────────────┐   USB CDC (優先) / Wi-Fi     ┌────────────────────────────┐
+│  M5Stack CoreS3 SE          │  ──── 音声/API request ────► │  母艦 PC / Mac              │
 │  ─ M5Unified + Avatar       │     録音 WAV (16k mono)       │  FastAPI                    │
 │  ─ 内蔵 PDM マイクで録音    │                               │   /chat        (会話)       │
 │  ─ LCD タッチで push-to-talk │                              │   /wake        (呼びかけ検出) │
@@ -85,6 +85,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-irodori-
 ```
 
 - 通常会話は CoreS3 → 母艦の **要求-応答** (`POST /chat`)
+- USB接続時は `server/usb_bridge.py` がCDC上の要求を `127.0.0.1:8000` の既存APIへ中継する。USBがなければ従来のWi-Fiへ自動フォールバックする
 - ウェイクワードは CoreS3 → 母艦の **短時間 STT 判定** (`POST /wake`)。検出後に ack beep を鳴らして本録音へ入る
 - Sleep 中の寝息 / 寝言は CoreS3 → 母艦の **短文 TTS** (`POST /speak`)
 - 定期発話 / 外部 push は母艦 → CoreS3 を **long-poll** で実現 (`GET /pull`、CoreS3 が Idle 中に短ポーリング)

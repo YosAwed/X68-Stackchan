@@ -19,7 +19,10 @@ namespace stackchan {
 
 class RemoteHandler {
 public:
-    static constexpr uint32_t TIMEOUT_MS  = 600;  // 受信途絶のタイムアウト
+    // iPhone hotspot coexistence can leave brief gaps in ESP-NOW reception.
+    // Keep the last button state long enough that a held PTT is not mistaken
+    // for a release; an explicit release packet still takes effect at once.
+    static constexpr uint32_t TIMEOUT_MS  = 2000;
     static constexpr int8_t   DEADZONE    = 12;   // ジョイスティック不感帯
 
     struct State {

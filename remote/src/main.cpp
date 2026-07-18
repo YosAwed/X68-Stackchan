@@ -29,6 +29,39 @@ static uint32_t            g_last_draw_ms = 0;
 static bool                g_espnow_ok   = false;
 static bool                g_wifi_ok     = false;
 static uint8_t             g_last_buttons = 0;
+static uint32_t            g_last_wifi_retry_ms = 0;
+static bool                g_channel_scan = false;
+static uint8_t             g_scan_channel = 1;
+
+static void startChannelScan() {
+    if (g_channel_scan) return;
+    WiFi.setAutoReconnect(false);
+    WiFi.disconnect(false, false);
+    g_channel_scan = true;
+    g_scan_channel = 1;
+    Serial.println("ESP-NOW channel scan fallback");
+}
+
+static void maintainWifi() {
+    if (g_channel_scan) return;
+    const bool connected = WiFi.status() == WL_CONNECTED;
+    if (connected != g_wifi_ok) {
+        g_wifi_ok = connected;
+        if (connected) {
+            Serial.printf("WiFi reconnected ch=%d\n", WiFi.channel());
+        } else {
+            Serial.println("WiFi lost");
+        }
+    }
+    if (connected) return;
+
+    const uint32_t now = millis();
+    if (now - g_last_wifi_retry_ms < 5000) return;
+    g_last_wifi_retry_ms = now;
+    // APが見つからない状態でreconnectを重ねるとSTA接続処理が競合する。
+    // 一定時間でESP-NOWチャンネル巡回へ切り替える。
+    startChannelScan();
+}
 
 static void drawStatus(const Packet& pkt) {
     M5.Display.setTextSize(2);
@@ -51,8 +84,8 @@ static void drawStatus(const Packet& pkt) {
     M5.Display.setTextColor(0xFFFF, 0x0000);
 }
 
-static void onSent(const uint8_t* mac, esp_now_send_status_t status) {
-    (void)mac;
+static void onSent(const wifi_tx_info_t* info, esp_now_send_status_t status) {
+    (void)info;
     (void)status;
 }
 
@@ -69,6 +102,8 @@ void setup() {
 
     // Wi-Fi STA モードで接続 (ESP-NOW チャンネル同期)
     WiFi.mode(WIFI_STA);
+    WiFi.persistent(false);
+    WiFi.setAutoReconnect(true);
     WiFi.setSleep(false);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
     const uint32_t t0 = millis();
@@ -82,13 +117,16 @@ void setup() {
                       WiFi.channel(), WiFi.macAddress().c_str());
     } else {
         Serial.println("WiFi FAILED — ESP-NOW channel may mismatch");
+        startChannelScan();
     }
 
     // ESP-NOW 初期化
     if (esp_now_init() == ESP_OK) {
         memset(&g_peer, 0, sizeof(g_peer));
         memcpy(g_peer.peer_addr, TARGET_MAC, 6);
-        g_peer.channel = g_wifi_ok ? WiFi.channel() : 0;
+        // 0 はSTAの現在チャンネルを使う指定。AP再開時にチャンネルが
+        // 変わってもpeer情報を書き直さず追従できる。
+        g_peer.channel = 0;
         g_peer.encrypt = false;
         esp_now_add_peer(&g_peer);
         esp_now_register_send_cb(onSent);
@@ -101,9 +139,12 @@ void setup() {
 
 void loop() {
     M5.update();
+    maintainWifi();
 
     const uint32_t now = millis();
-    if (now - g_last_tx_ms < TX_INTERVAL_MS) return;
+    // AP未接続時は25msごとに1chずつ移動し、約325msで1〜13chを一巡。
+    const uint32_t tx_interval = g_channel_scan ? 25 : TX_INTERVAL_MS;
+    if (now - g_last_tx_ms < tx_interval) return;
     g_last_tx_ms = now;
 
     Packet pkt;
@@ -113,6 +154,10 @@ void loop() {
     if (M5.BtnB.isPressed())              pkt.buttons |= 0x02;
 
     if (g_espnow_ok) {
+        if (g_channel_scan) {
+            esp_wifi_set_channel(g_scan_channel, WIFI_SECOND_CHAN_NONE);
+            g_scan_channel = g_scan_channel >= 13 ? 1 : g_scan_channel + 1;
+        }
         esp_now_send(TARGET_MAC, (const uint8_t*)&pkt, sizeof(pkt));
     }
 
